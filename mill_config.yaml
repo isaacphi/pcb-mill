@@ -1,0 +1,52 @@
+# gerber2gcode settings for one machine + bit (here: single 0.8 mm end mill, through-hole
+# only). Copy and edit for your machine; pass with --config. Design your board with
+# track width and clearance >= the bit diameter, or the bit will cut through copper.
+
+general:
+  safe_height: 1.0 # mm - Z for rapid moves (clear of clamps/tape)
+  dpi: 1500 # Gerber raster resolution (higher = finer isolation edges)
+
+tools:
+  isolation: # copper isolation — the 0.8 mm end mill
+    tool_diameter: 0.8 # = pcb_router_0.8mm clearance/track (the bit)
+    spindle_speed: 20000
+    feed_rate: 250
+    plunge_rate: 80
+    cut_depth: 0.2 # just through 35 µm copper into FR-4 a hair
+    passes: 1
+    step_over: 0.4 # 50% of the bit
+    isolation_border: 0 # extra clearance beyond the copper (half a bit width)
+
+  back_isolation: # bottom copper — same bit (tool mirrors this layer)
+    tool_diameter: 0.8
+    spindle_speed: 20000
+    feed_rate: 250
+    plunge_rate: 80
+    cut_depth: 0.2
+    passes: 1
+    step_over: 0.4
+    isolation_border: 0
+
+  edge_cuts: # board outline — same 0.8 mm bit
+    tool_diameter: 0.8
+    spindle_speed: 20000
+    feed_rate: 220
+    plunge_rate: 45
+    cut_depth: 0.4 # depth per pass
+    total_depth: 1.6
+    tabs: false
+
+  drill: # holes >= 0.8 mm (through-hole only), pecked
+    tool_diameter: 0.8 # = pcb_router_0.8mm min hole
+    spindle_speed: 20000
+    feed_rate: 100
+    plunge_rate: 50
+    cut_depth: 1.9 # peck depth
+    total_depth: 1.9 # through a 1.6 mm board + backer
+    retract_height: 1.0
+    bore_tolerance: 0.2 # holes > bit + this are helically bored to size; <= just plunged
+    bore_step_down: 0.4 # Z per helix turn when boring
+
+output:
+  separate_files: true # one file per operation
+  file_prefix: "pcb"

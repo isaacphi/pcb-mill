@@ -1,0 +1,18 @@
+[project]
+name = "pcb-mill"
+version = "0.1.0"
+description = "Gerber/Excellon (or KiCad board) -> GRBL G-code for PCB isolation milling"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.9",
+    "numpy>=2.0",
+    "pillow>=10.0",
+    "pygerber==2.4.3",
+    "pyyaml>=6.0",
+    "scikit-image>=0.24",
+    "scipy>=1.13",
+]
+
+[tool.uv]
+package = false

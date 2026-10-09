@@ -1,0 +1,47 @@
+--- a/gerber_to_gcode.py	2026-10-09 15:01:43
++++ b/gerber_to_gcode.py	2026-10-09 15:01:43
+@@ -53,6 +53,9 @@
+         self.tab_width = config.get('tab_width', 2.0)
+         self.tab_height = config.get('tab_height', 0.3)
+         self.isolation_border = config.get('isolation_border', 0.0)  # mm
++        # Drill: holes more than bore_tolerance larger than the bit are helically bored
++        self.bore_tolerance = config.get('bore_tolerance', 0.2)  # mm
++        self.bore_step_down = config.get('bore_step_down', 0.4)  # mm of Z per helix turn
+         # Laser-specific attributes
+         self.power = config.get('power', 800)
+         self.focus_height = config.get('focus_height', 50.0)
+@@ -984,7 +987,24 @@
+             "",
+         ]
+ 
+-        def _drill_at(gx: float, gy: float) -> List[str]:
++        def _bore_at(gx: float, gy: float, diameter: float) -> List[str]:
++            # Helix down at the bit-centre radius, then a flat full circle to clean the floor.
++            r = (diameter - tool.tool_diameter) / 2.0
++            cmds = [f"; Bore {diameter:.2f} mm (helix r={r:.4f})",
++                    f"G0 X{gx + r:.4f} Y{gy:.4f} Z{self.safe_height}",
++                    f"G1 Z0 F{tool.plunge_rate}"]
++            depth = 0.0
++            while depth < tool.total_depth:
++                depth = min(depth + tool.bore_step_down, tool.total_depth)
++                cmds.append(f"G2 X{gx + r:.4f} Y{gy:.4f} Z{-depth:.4f} I{-r:.4f} J0 F{tool.feed_rate}")
++            cmds.append(f"G2 X{gx + r:.4f} Y{gy:.4f} I{-r:.4f} J0 F{tool.feed_rate}")
++            cmds.append(f"G1 X{gx:.4f} Y{gy:.4f} F{tool.feed_rate}")  # off the wall before retract
++            cmds.append(f"G0 Z{self.safe_height}")
++            return cmds
++
++        def _drill_at(gx: float, gy: float, diameter: float = None) -> List[str]:
++            if diameter is not None and diameter - tool.tool_diameter > tool.bore_tolerance + 1e-6:
++                return _bore_at(gx, gy, diameter)
+             cmds = [f"G0 X{gx:.4f} Y{gy:.4f} Z{self.safe_height}"]
+             if tool.cut_depth > 0 and tool.cut_depth < tool.total_depth:
+                 current_depth = 0.0
+@@ -1029,7 +1049,7 @@
+         for diameter, hole_list in sorted(holes_by_diameter.items()):
+             gcode_lines.append(f"; PCB holes: {diameter:.2f} mm diameter ({len(hole_list)} holes)")
+             for x, y in hole_list:
+-                gcode_lines.extend(_drill_at(x + x_off, y + y_off))
++                gcode_lines.extend(_drill_at(x + x_off, y + y_off, diameter))
+ 
+         return gcode_lines
+ 

@@ -1,0 +1,101 @@
+diff --git i/gerber_to_gcode.py w/gerber_to_gcode.py
+index 83552dc..1d8e5af 100644
+--- i/gerber_to_gcode.py
++++ w/gerber_to_gcode.py
+@@ -288,8 +288,23 @@ class GerberToGcode:
+         binary = bitmap > threshold
+ 
+         if erosion_px > 0:
+-            disk_r = max(1, round(erosion_px))
+-            binary = morphology.dilation(binary, morphology.disk(disk_r))
++            # Back off 2px from the exact offset: at minimum clearance (= bit diameter)
++            # a full tool-radius dilation makes opposing features touch and merge, and
++            # the contour then skips the seam entirely (-> short). 2px (~34um at 1500
++            # dpi) keeps such seams as thin open channels that still get cut, at the
++            # cost of the bit biting ~35um into trace edges (render thresholding fattens
++            # copper ~1px, partially compensating).
++            disk_r = max(1, round(erosion_px) - 3)
++            # Dilation by a euclidean disk == thresholding the distance transform;
++            # the EDT is computed once per bitmap and reused, so many border passes
++            # (isolation_border rubout) stay fast where repeated disk dilations
++            # would be O(passes * r^2).
++            cache = getattr(self, '_edt_cache', None)
++            if cache is None or cache[0] is not bitmap:
++                from scipy import ndimage
++                cache = (bitmap, ndimage.distance_transform_edt(~binary))
++                self._edt_cache = cache
++            binary = cache[1] <= disk_r
+ 
+         pad_size = 2
+         binary = np.pad(binary, pad_size, mode='constant', constant_values=False)
+@@ -572,7 +587,10 @@ class GerberToGcode:
+             n_extra = max(0, tool.passes - 1)
+ 
+         for pass_num in range(n_extra + 1):
+-            erosion_mm = pass_num * tool.step_over
++            # Offset the contour outward by the tool RADIUS so the bit's EDGE (not its
++            # centerline) kisses the copper boundary. Without this every feature loses
++            # half a bit width per side — a track as wide as the bit mills away entirely.
++            erosion_mm = tool.tool_diameter / 2.0 + pass_num * tool.step_over
+             erosion_px = erosion_mm / scale_factor
+             paths = self.bitmap_to_toolpaths(bitmap, gerber_bounds, erosion_px=erosion_px)
+             label = "primary" if pass_num == 0 else f"border +{erosion_mm:.2f}mm"
+@@ -799,21 +817,43 @@ class GerberToGcode:
+     def parse_edge_cuts_to_outline(self, bitmap: np.ndarray,
+                                    gerber_bounds: Tuple[float, float, float, float]
+                                    ) -> List[Tuple[float, float]]:
+-        """Parse edge cuts bitmap and return board outline in absolute Gerber coordinates."""
+-        from skimage import measure
++        """Parse edge cuts bitmap and return board outline in absolute Gerber coordinates.
++
++        The outline is offset OUTWARD by the edge-cuts tool radius so the bit's
++        EDGE (not its centerline) kisses the Edge.Cuts line. Without this every
++        edge loses half a bit width per side — a 0.8 mm bit on a 24x47 board
++        mills out at ~23x46. Mirrors the isolation tool-radius offset.
++        """
++        from skimage import measure, morphology
++        from scipy import ndimage
+ 
+         val_min, val_max = bitmap.min(), bitmap.max()
+         threshold = val_min + (val_max - val_min) * 0.4
+         binary = bitmap > threshold
+ 
++        # Offset the (zero-width) Edge.Cuts line outward by tool_radius so the
++        # bit's inner edge rides the drawn line and the finished board matches
++        # the drawn outline (no per-side undersizing). The Edge.Cuts renders as
++        # a thin outline, so: pad with zeros (room to expand past the gerber
++        # bounds), fill the interior (solid region -> single outer contour
++        # instead of a band with inner+outer), dilate by tool_radius (grow
++        # outward), then trace the one remaining contour and un-pad.
++        scale_factor = 25.4 / self.dpi
++        tool_radius_mm = self.edge_cuts_tool.tool_diameter / 2.0
++        tool_radius_px = tool_radius_mm / scale_factor
++        disk_r = max(1, round(tool_radius_px))
++        pad = disk_r + 5
++        binary = np.pad(binary, pad, mode='constant', constant_values=False)
++        binary = ndimage.binary_fill_holes(binary)
++        binary = morphology.dilation(binary, morphology.disk(disk_r))
++
+         contours = measure.find_contours(binary.astype(float), 0.5)
+ 
+         if not contours:
+             return []
+ 
+-        largest_contour = max(contours, key=len)
++        largest_contour = max(contours, key=len) - pad  # un-pad
+         smoothed = self.smooth_path(largest_contour, tolerance=1.0)
+-        scale_factor = 25.4 / self.dpi
+         gb_min_x, gb_min_y, gb_max_x, gb_max_y = gerber_bounds
+ 
+         outline = [(point[1] * scale_factor + gb_min_x,
+@@ -825,7 +865,9 @@ class GerberToGcode:
+     def impute_edge_cuts(self, trace_bounds: Tuple[float, float, float, float]) -> List[Tuple[float, float]]:
+         """Generate rectangular board outline from trace bounds plus margin"""
+         min_x, min_y, max_x, max_y = trace_bounds
+-        margin = self.edge_margin
++        # Add tool radius so the bit's edge (not centerline) hits the intended
++        # outline — mirrors the parse_edge_cuts_to_outline dilation offset.
++        margin = self.edge_margin + self.edge_cuts_tool.tool_diameter / 2.0
+ 
+         outline = [
+             (min_x - margin, min_y - margin),
