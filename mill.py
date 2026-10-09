@@ -1,16 +1,17 @@
 """Gerber + Excellon -> GRBL G-code for PCB isolation milling (no KiCad needed).
 
-Single-sided (default): copper on the BOTTOM layer, milled copper-side up, so all
-output is pre-mirrored. Writes onesided.nc (isolation -> drill -> edge, one tool,
-no pauses) plus isolation.nc, drill.nc, edge.nc.
+Single-sided (--copper): milled copper-side up. Writes onesided.nc (isolation ->
+drill -> edge, one tool, no pauses) plus isolation.nc, drill.nc, edge.nc.
+  --side top (default): copper designed on the top layer; output as designed.
+  --side bottom: copper designed on the bottom layer; all output pre-mirrored.
 
---top FILE: double-sided (two single-sided sheets glued together). Writes top.nc and
+--top + --bottom: double-sided (two single-sided sheets glued together). Writes top.nc and
 bottom.nc (pre-mirrored); both drill 3 corner alignment holes for flip registration.
 
 The drill file must hold ALL holes (plated + non-plated) in one Excellon file.
 
-Run:  uv run mill.py --copper B_Cu.gbr --edge Edge_Cuts.gbr --drill board.drl [-o out]
-      uv run mill.py --top F_Cu.gbr --copper B_Cu.gbr --edge ... --drill ... -o out
+Run:  uv run mill.py --copper F_Cu.gbr --edge Edge_Cuts.gbr --drill board.drl [-o out] [--side bottom]
+      uv run mill.py --top F_Cu.gbr --bottom B_Cu.gbr --edge ... --drill ... -o out
 """
 
 import argparse
@@ -155,15 +156,21 @@ def run_gerber2gcode(top, bottom, edge, drill, config, out):
     return lo + hi, texts
 
 
-def single_sided(copper, edge, drill, config, out):
-    # gerber2gcode requires a front layer; feed it the copper and discard that output
+def single_sided(copper, side, edge, drill, config, out):
+    # gerber2gcode needs both layers; feed it the copper twice and keep the side we want
     axis, t = run_gerber2gcode(copper, copper, edge, drill, config, out)
-    iso = strip_alignment_marks(t["pcb_back_isolation.nc"])
-    drl = strip_alignment_holes(mirror_x(t["pcb_drill.nc"], axis))
-    edg = mirror_x(t["pcb_edge_cuts.nc"], axis)
+    if side == "top":  # copper faces up as designed: machine frame, no mirroring
+        iso = strip_alignment_marks(t["pcb_isolation.nc"])
+        drl = strip_alignment_holes(t["pcb_drill.nc"])
+        edg = t["pcb_edge_cuts.nc"]
+    else:  # bottom copper milled facing up: everything mirrored
+        iso = strip_alignment_marks(t["pcb_back_isolation.nc"])
+        drl = strip_alignment_holes(mirror_x(t["pcb_drill.nc"], axis))
+        edg = mirror_x(t["pcb_edge_cuts.nc"], axis)
     files = {"isolation.nc": iso, "drill.nc": drl, "edge.nc": edg,
              "onesided.nc": combine([("COPPER ISOLATION", iso), ("DRILL", drl), ("EDGE CUT", edg)])}
-    print("single-sided (board milled copper-side up; all output pre-mirrored)")
+    print(f"single-sided, {side} copper (milled copper-side up"
+          + ("; all output pre-mirrored)" if side == "bottom" else ")"))
     return axis, files
 
 
@@ -186,18 +193,20 @@ def double_sided(top, bottom, edge, drill, config, out):
     return axis, files
 
 
-def mill(copper, edge, drill, out, top=None, config=ROOT / "mill_config.yaml"):
+def mill(edge, drill, out, copper=None, side="top", top=None, bottom=None,
+         config=ROOT / "mill_config.yaml"):
+    """Single-sided: copper + side. Double-sided: top + bottom."""
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    ins = [Path(p).resolve() for p in (copper, edge, drill, config)]
-    for p in ins:
-        if not p.exists():
+    paths = [Path(p).resolve() if p else None for p in (edge, drill, config, copper, top, bottom)]
+    for p in paths:
+        if p and not p.exists():
             sys.exit(f"not found: {p}")
-    copper, edge, drill, config = ins
-    if top:
-        axis, files = double_sided(Path(top).resolve(), copper, edge, drill, config, out)
+    edge, drill, config, copper, top, bottom = paths
+    if top and bottom:
+        axis, files = double_sided(top, bottom, edge, drill, config, out)
     else:
-        axis, files = single_sided(copper, edge, drill, config, out)
+        axis, files = single_sided(copper, side, edge, drill, config, out)
     for name, text in files.items():
         (out / name).write_text(text)
         print("  %-16s %8d bytes" % (name, len(text)))
@@ -208,14 +217,21 @@ def mill(copper, edge, drill, out, top=None, config=ROOT / "mill_config.yaml"):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--copper", required=True, help="bottom copper Gerber (the only copper layer if single-sided)")
-    ap.add_argument("--top", help="top copper Gerber -> double-sided output")
+    layers = ap.add_mutually_exclusive_group(required=True)
+    layers.add_argument("--copper", help="single-sided: the copper Gerber")
+    layers.add_argument("--top", help="double-sided: top copper Gerber (needs --bottom)")
+    ap.add_argument("--bottom", help="double-sided: bottom copper Gerber")
+    ap.add_argument("--side", choices=("top", "bottom"), default="top",
+                    help="single-sided: layer the copper was designed on (default: top)")
     ap.add_argument("--edge", required=True, help="board outline Gerber")
     ap.add_argument("--drill", required=True, help="Excellon drill file with ALL holes")
     ap.add_argument("-o", "--out", default="out", help="output directory (default: out)")
     ap.add_argument("--config", default=ROOT / "mill_config.yaml", help="tool/feed settings YAML")
     a = ap.parse_args()
-    mill(a.copper, a.edge, a.drill, a.out, top=a.top, config=a.config)
+    if bool(a.top) != bool(a.bottom):
+        ap.error("double-sided needs both --top and --bottom")
+    mill(a.edge, a.drill, a.out, copper=a.copper, side=a.side, top=a.top, bottom=a.bottom,
+         config=a.config)
 
 
 if __name__ == "__main__":

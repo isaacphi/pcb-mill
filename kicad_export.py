@@ -1,10 +1,10 @@
 """KiCad board -> Gerbers + drill -> G-code (wraps mill.py; needs KiCad 8+ installed).
 
 Exports F.Cu, B.Cu, Edge.Cuts and one combined PTH+NPTH Excellon file into <out>/gerbers,
-then runs mill.py. Single-sided boards must have all copper on B.Cu.
+then runs mill.py. Single-sided: --side top (default) mills F.Cu, --side bottom mills B.Cu.
 kicad-cli is found via $KICAD_CLI, then PATH, then the default Mac/Windows install path.
 
-Run:  uv run kicad_export.py board.kicad_pcb [-o out] [--double] [--config FILE]
+Run:  uv run kicad_export.py board.kicad_pcb [-o out] [--side top|bottom | --double] [--config FILE]
 """
 
 import argparse
@@ -48,11 +48,16 @@ def main():
     ap.add_argument("board", type=Path)
     ap.add_argument("-o", "--out", type=Path, default=Path("out"))
     ap.add_argument("--double", action="store_true", help="two-sided: mill F.Cu and B.Cu sheets")
+    ap.add_argument("--side", choices=("top", "bottom"), default="top",
+                    help="single-sided: copper layer, F.Cu or B.Cu (default: top)")
     ap.add_argument("--config", default=ROOT / "mill_config.yaml")
     a = ap.parse_args()
     out = a.out.resolve()
     fcu, bcu, edge, drl = export(a.board.resolve(), out / "gerbers")
-    mill(bcu, edge, drl, out, top=fcu if a.double else None, config=a.config)
+    if a.double:
+        mill(edge, drl, out, top=fcu, bottom=bcu, config=a.config)
+    else:
+        mill(edge, drl, out, copper=fcu if a.side == "top" else bcu, side=a.side, config=a.config)
 
 
 if __name__ == "__main__":
