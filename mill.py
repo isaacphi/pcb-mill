@@ -2,15 +2,15 @@
 
 Single-sided (--copper): milled copper-side up. Writes onesided.nc (isolation ->
 drill -> edge, one tool, no pauses) plus isolation.nc, drill.nc, edge.nc.
-  --side top (default): copper designed on the top layer; output as designed.
-  --side bottom: copper designed on the bottom layer; all output pre-mirrored.
+  --side bottom (default): copper designed on the bottom layer; all output pre-mirrored.
+  --side top: copper designed on the top layer; output as designed.
 
 --top + --bottom: double-sided (two single-sided sheets glued together). Writes top.nc and
 bottom.nc (pre-mirrored); both drill 3 corner alignment holes for flip registration.
 
 The drill file must hold ALL holes (plated + non-plated) in one Excellon file.
 
-Run:  uv run mill.py --copper F_Cu.gbr --edge Edge_Cuts.gbr --drill board.drl [-o out] [--side bottom]
+Run:  uv run mill.py --copper B_Cu.gbr --edge Edge_Cuts.gbr --drill board.drl [-o out] [--side top]
       uv run mill.py --top F_Cu.gbr --bottom B_Cu.gbr --edge ... --drill ... -o out
 """
 
@@ -193,7 +193,7 @@ def double_sided(top, bottom, edge, drill, config, out):
     return axis, files
 
 
-def mill(edge, drill, out, copper=None, side="top", top=None, bottom=None,
+def mill(edge, drill, out, copper=None, side="bottom", top=None, bottom=None,
          config=ROOT / "mill_config.yaml"):
     """Single-sided: copper + side. Double-sided: top + bottom."""
     out = Path(out).resolve()
@@ -221,8 +221,8 @@ def main():
     layers.add_argument("--copper", help="single-sided: the copper Gerber")
     layers.add_argument("--top", help="double-sided: top copper Gerber (needs --bottom)")
     ap.add_argument("--bottom", help="double-sided: bottom copper Gerber")
-    ap.add_argument("--side", choices=("top", "bottom"), default="top",
-                    help="single-sided: layer the copper was designed on (default: top)")
+    ap.add_argument("--side", choices=("top", "bottom"), default="bottom",
+                    help="single-sided: layer the copper was designed on (default: bottom)")
     ap.add_argument("--edge", required=True, help="board outline Gerber")
     ap.add_argument("--drill", required=True, help="Excellon drill file with ALL holes")
     ap.add_argument("-o", "--out", default="out", help="output directory (default: out)")

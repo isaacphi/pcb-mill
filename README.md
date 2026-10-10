@@ -21,11 +21,11 @@ patched (see [Patches](#patches)).
 **From Gerbers** (any EDA tool):
 
 ```
-# single-sided, copper designed on the top layer (default)
-uv run mill.py --copper board-F_Cu.gbr --edge board-Edge_Cuts.gbr --drill board.drl -o out
+# single-sided, copper designed on the bottom layer (default; output is mirrored)
+uv run mill.py --copper board-B_Cu.gbr --edge board-Edge_Cuts.gbr --drill board.drl -o out
 
-# single-sided, copper designed on the bottom layer (output is mirrored)
-uv run mill.py --copper board-B_Cu.gbr --side bottom --edge ... --drill ... -o out
+# single-sided, copper designed on the top layer
+uv run mill.py --copper board-F_Cu.gbr --side top --edge ... --drill ... -o out
 
 # double-sided
 uv run mill.py --top board-F_Cu.gbr --bottom board-B_Cu.gbr --edge ... --drill ... -o out
@@ -53,7 +53,7 @@ Writes `out/toolpaths.png`. Bore arcs are not drawn.
 
 | Mode | Files | Notes |
 |---|---|---|
-| single-sided | `onesided.nc` (+ `isolation.nc`, `drill.nc`, `edge.nc`) | Board milled copper-side up. `--side bottom` pre-mirrors everything. One tool, no pauses. |
+| single-sided | `onesided.nc` (+ `isolation.nc`, `drill.nc`, `edge.nc`) | Board milled copper-side up. Default `--side bottom` pre-mirrors everything. One tool, no pauses. |
 | double-sided | `top.nc`, `bottom.nc` | Two sheets. `top.nc` drills 3 corner alignment holes (0,0), (W,0), (W,H): pin them, flip the board left-right onto the pins, run `bottom.nc` (pre-mirrored). No plated vias: wire through and solder both sides. |
 
 Each file runs isolation → drill → edge cut.
