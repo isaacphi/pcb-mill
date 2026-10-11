@@ -55,6 +55,19 @@ def mirror_x(text, axis):
     return "\n".join(out) + "\n"
 
 
+def strip_comments(text):
+    """Drop ; and ( ) comments and blank lines; output must be plain ASCII for any controller."""
+    out = []
+    for line in text.splitlines():
+        line = re.sub(r"\([^)]*\)", "", line.split(";")[0]).strip()
+        if line:
+            out.append(line)
+    text = "\n".join(out) + "\n"
+    if not text.isascii():
+        sys.exit("non-ASCII G-code: " + next(l for l in out if not l.isascii()))
+    return text
+
+
 def board_span_x(edge_gcode):
     xs = [
         float(x)
@@ -208,6 +221,7 @@ def mill(edge, drill, out, copper=None, side="bottom", top=None, bottom=None,
     else:
         axis, files = single_sided(copper, side, edge, drill, config, out)
     for name, text in files.items():
+        text = strip_comments(text)
         (out / name).write_text(text)
         print("  %-16s %8d bytes" % (name, len(text)))
     print("mirror axis X = %.3f mm" % axis)
