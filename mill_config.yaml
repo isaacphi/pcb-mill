@@ -36,7 +36,7 @@ tools:
     total_depth: 1.6
     tabs: false
 
-  drill: # holes >= 0.8 mm (through-hole only), pecked
+  drill: # holes > 0.85 mm are bored with 0.1mm segments; <= 0.85mm plunged
     tool_diameter: 0.8 # = pcb_router_0.8mm min hole
     spindle_speed: 20000
     feed_rate: 100
@@ -44,7 +44,7 @@ tools:
     cut_depth: 1.9 # peck depth
     total_depth: 1.9 # through a 1.6 mm board + backer
     retract_height: 1.0
-    bore_tolerance: 0.2 # holes > bit + this are helically bored to size; <= just plunged
+    bore_tolerance: 0.05 # holes > bit + this are helically bored to size; <= just plunged
     bore_step_down: 0.4 # Z per helix turn when boring
 
 output:

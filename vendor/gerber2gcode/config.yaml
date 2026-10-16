@@ -1,0 +1,83 @@
+# Gerber to G-code Converter Configuration
+# Tool presets for different PCB milling operations
+
+# General settings
+general:
+  safe_height: 2.0        # mm - Z height for rapid moves
+  dpi: 1000               # Resolution for Gerber rendering
+
+# Tool presets for each operation type
+tools:
+  # Isolation routing for copper traces
+  isolation:
+    tool_diameter: 0.1    # mm - V-bit tip or engraving bit
+    spindle_speed: 10000  # RPM
+    feed_rate: 200        # mm/min - cutting feed
+    plunge_rate: 50       # mm/min - plunge feed
+    cut_depth: 0.06      # mm - depth per pass
+    passes: 1             # number of isolation passes
+    step_over: 0.1     # mm - step between passes
+    isolation_border: 0.5 # mm extra clearance around traces (0 = off; overrides passes when >0)
+
+  # Edge cuts / board outline
+  edge_cuts:
+    tool_diameter: 3.175    # mm - end mill for cutting through
+    spindle_speed: 8000   # RPM
+    feed_rate: 150        # mm/min - cutting feed
+    plunge_rate: 30       # mm/min - plunge feed
+    cut_depth: 0.3        # mm - depth per pass
+    total_depth: 1.5      # mm - total board thickness  
+    tabs: false           # whether to leave holding tabs
+    tab_width: 2.0        # mm - width of tabs if enabled
+    tab_height: 0.3       # mm - height of tabs
+
+  # Drilling holes
+  drill:
+    tool_diameter: 1.2    # mm - drill bit diameter (or use peck drilling)
+    spindle_speed: 5000  # RPM
+    feed_rate: 100        # mm/min - not used for drilling
+    plunge_rate: 60       # mm/min - drilling feed
+    cut_depth: 0.3       # mm - peck depth (0 for single plunge)
+    total_depth: 1.8      # mm - drill through depth
+    retract_height: 1.0   # mm - retract between pecks
+
+  # Back copper layer isolation (for double-sided PCBs / ground plane)
+  # Leave this section absent or empty to inherit from isolation settings above
+  back_isolation:
+    tool_diameter: 0.1    # mm - V-bit tip or engraving bit
+    spindle_speed: 10000  # RPM
+    feed_rate: 200        # mm/min
+    plunge_rate: 50       # mm/min
+    cut_depth: 0.06       # mm - depth per pass
+    passes: 1
+    step_over: 0.1        # mm
+    isolation_border: 0.5 # mm extra clearance around traces
+
+  # Laser etching (diode laser for solder mask removal)
+  laser:
+    power: 500              # S value 0-1000 (GRBL laser power) — trace isolation
+    feed_rate: 350          # mm/min — trace isolation speed
+    plunge_rate: 1000       # mm/min (not used for laser but kept for compat)
+    focus_height: 50.0      # mm Z height for laser focus
+    dynamic_mode: true      # M4 dynamic mode (recommended) vs M3 constant
+    fill_line_spacing: 0.1  # mm between raster lines for pad fill and trace border passes
+    trace_border_passes: 3  # extra lines drawn outside each trace (0 = single edge line)
+    pad_min_area: 1.0       # mm² minimum area to classify as pad
+    pad_max_eccentricity: 0.8  # 0=circle 1=line; below this = pad
+    pad_power: 400          # S value for pad ablation (omit to use main power)
+    pad_feed_rate: 500      # mm/min for pad ablation (omit to use main feed_rate)
+
+# Soldermask overlay for photoemulsion printing
+# Used with --soldermask-png to generate a printable transparency for soldermask application
+soldermask_overlay:
+  print_dpi: 600          # DPI for printing on transparent film (laser printer typical)
+  invert: true            # true = positive photoemulsion (pads print dark, mask stays clear)
+                          # false = negative photoemulsion (pads print clear, mask prints dark)
+
+# Edge cuts imputation settings (when no edge cuts file provided)
+edge_margin: 3.0          # mm - margin around traces for imputed board outline
+
+# Output options
+output:
+  separate_files: false   # true = one file per operation, false = combined
+  file_prefix: "pcb"      # prefix for output files when separate_files is true
