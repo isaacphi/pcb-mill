@@ -44,7 +44,7 @@ Your Laptop/Phone
                     │
         ┌───────────▼───────────┐
         │   300W ER11 Spindle   │
-        │   (48V + SSR control) │
+        │  (48V + relay control)│
         └───────────────────────┘
 ```
 
@@ -61,8 +61,8 @@ Your Laptop/Phone
 ### You Need
 | Item | Cost | Purpose |
 |------|------|---------|
-| SSR-40DA or similar | ~$10 | Solid state relay for spindle on/off |
-| 5V relay module (optional) | ~$5 | If using opto-isolated relay instead of SSR |
+| 24VDC-coil power relay | ~$8 | Spindle on/off by switching the 48V supply's MAINS input (see 3.1). Contacts ≥10A/250VAC |
+| 1N4007 diode | ~$0.10 | Flyback across the relay coil (unless built in) |
 | Dupont wires | ~$5 | Connections between Pi and Snapmaker board |
 | USB cable (A to micro-B) | ~$5 | Alternative to UART wiring |
 | 8GB+ microSD | ~$8 | Pi OS (have?) |
@@ -236,9 +236,9 @@ position_min: -3.25
 position_max: 125.5
 homing_speed: 9
 
-# Spindle control - on/off via SSR
+# Spindle control - on/off via relay (switches 48V supply mains input, see doc 3.1)
 [output_pin spindle]
-pin: PB10  # Was heater pin, now spindle SSR
+pin: PB10  # Was heater pin, now drives the relay coil (24VDC)
 pwm: False
 value: 0
 shutdown_value: 0
@@ -452,30 +452,44 @@ sudo systemctl restart klipper moonraker
 
 ## Part 3: Spindle Wiring
 
-### 3.1 SSR for On/Off Control
+### 3.1 Relay for On/Off Control
 
-Wire SSR between 48V supply and spindle:
+**Decision: mechanical relay switching the MAINS INPUT of the 48V supply** —
+not the DC output. The spindle is a ~6.5 A brushed DC motor on 48 V; DC has no
+zero-crossing, so breaking it arcs hard, and most relays are only DC-rated to
+30 VDC (an SSR-40DA is worse: AC-output, it latches ON forever on a DC load).
+On the AC side the contacts see ~2 A with zero-crossing — any relay rated
+≥10 A/250 VAC handles it indefinitely, and the coil side is galvanically
+isolated from the board.
 
 ```
-48V Supply (+) ────────────────────→ SSR INPUT (+) (DC side, 3-32V)
-                                      │
-Snapmaker Board PB10 ────────────────→ SSR INPUT (+)
-Snapmaker Board GND ─────────────────→ SSR INPUT (-)
-                                      │
-48V Supply (-) ────────────────────→ SSR OUTPUT (-) (AC/DC load side)
-Spindle 48V+ ──────────────────────→ SSR OUTPUT (+)
-Spindle 48V- ──────────────────────→ 48V Supply (-)
+Snapmaker board heater output (24V, PB10) ──→ relay coil (24VDC)
+                                              + 1N4007 flyback diode across
+                                                coil (band toward +24V leg)
+
+Mains live ──→ relay contacts ──→ 48V supply AC input
+Mains neutral ──────────────────→ 48V supply AC input
+48V supply output ──────────────→ spindle, wired as stock
 ```
 
-**Note**: SSR-40DA handles DC input, AC output. For DC spindle, you need a **DC-to-DC SSR** or use a mechanical relay instead.
+- The heater output is usually **low-side switched**: one leg sits at +24 V
+  permanently, the other is pulled to GND when on. Meter the terminal pair
+  first and wire coil + diode accordingly. Coil draws ~20 mA — trivial for an
+  output designed for heater-cartridge amps. Skip the 5V "Arduino relay
+  modules" (wrong coil voltage, optocoupler you don't need); a plain 24VDC-coil
+  panel/DIN relay (Finder 40.52-class) is the right part. Some have the flyback
+  diode built in.
+- Tradeoffs of mains switching: ~100 ms supply spin-up on `M3`, and the spindle
+  **coasts** on `M5`/estop while the supply caps bleed (motion stops instantly;
+  the bit doesn't). Fine for PCB milling — just don't reach in until it stops.
+- A mechanical relay can't be PWM'd; speed control (if ever wanted) stays the
+  optional PA7 PWM→0-5V path in 3.3, with the relay remaining the on/off.
 
-**Better option for DC spindle**: Use a **MOSFET module** (e.g., IRF520 or logic-level MOSFET):
-```
-48V Supply (+) → MOSFET Source
-MOSFET Drain → Spindle (+)
-MOSFET Gate → PB10 (via 10kΩ resistor to GND)
-48V Supply (-) → Spindle (-) → GND
-```
+**Alternative (only if you need fast spindle kill)**: switch the 48 V DC output
+instead. Contacts must be explicitly DC-rated ≥48 V/10 A (check the datasheet
+DC curve, not the AC headline), plus a 1N5408 flyback diode across the spindle
+terminals and ideally an RC snubber across the contacts — expect contact wear
+over time on this inductive DC load.
 
 ### 3.2 Probe Wiring (Door-Switch Input)
 
@@ -741,12 +755,12 @@ restart_method: command  # or 'rpi' if direct GPIO
 ### Spindle Not Responding
 
 ```bash
-# Test SSR manually
-SET_PIN PIN=spindle VALUE=1  # Should click/LED
+# Test relay manually (spindle disconnected)
+SET_PIN PIN=spindle VALUE=1  # Coil should click
 SET_PIN PIN=spindle VALUE=0  # Should release
 
-# Check voltage at SSR input
-# Should be ~3.3V when VALUE=1
+# Meter across the relay coil: ~24V when VALUE=1, ~0V when VALUE=0
+# (if backwards, the heater output is low-side switched - swap legs)
 ```
 
 ### Limit Switches (Rails "Don't Stop")
@@ -814,7 +828,7 @@ Or pre-segment in `mill.py` output (modify gerber2gcode to emit G1 instead of G2
 
 1. [ ] Flash Klipper to Snapmaker board
 2. [ ] Set up Pi with Klipper/Moonraker/Fluidd
-3. [ ] Wire SSR for spindle control
+3. [ ] Wire relay for spindle control (mains side of 48V supply, 3.1)
 4. [ ] Verify endstop switches (QUERY_ENDSTOPS while pressing each lever)
 5. [ ] Test basic motion (G0, G28, M3/M5)
 6. [ ] Wire probe clips to door-switch module; verify with QUERY_PROBE

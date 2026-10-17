@@ -9,7 +9,7 @@ Plan for hosting both the Anycubic 3D printer (OctoPrint) and the Snapmaker CNC
 
 This supersedes the dedicated-Pi assumption in `remote-cnc-workflow.md` for the
 host side. The Snapmaker-side steps there (flashing Klipper to the board, wiring
-the SSR and probe, printer.cfg contents) are unchanged.
+the spindle relay and probe, printer.cfg contents) are unchanged.
 
 ---
 
@@ -149,7 +149,7 @@ Pi's heavier sibling (Pi 4/5) is the escape hatch.
 ## Step 4 — Snapmaker-side work (unchanged, physical)
 
 From `remote-cnc-workflow.md`: flash Klipper to the Snapmaker board (Part 1),
-wire SSR/spindle and probe clips (Part 3), then verify endstops/probe and run
+wire the spindle relay and probe clips (Part 3), then verify endstops/probe and run
 the PCB_MESH flow (Part 5). The gerber→G-code conversion moves to the web UI —
 see `gerber-web-ui-design.md` — so `convert.sh`/Samba (Part 4) is superseded.
 
