@@ -888,7 +888,11 @@ channel numbers — trust measurements, not labels):**
   meter-verified toggling 0↔24V. Chosen: !PB10 (header free; 48V ER11
   spindle is self-contained). Earlier "no swing" scare was SSH toggle runs
   dying, not hardware.
-- Probe input: `QUERY_PROBE` = open at rest; port 5 identified (see 3.2).
+- Probe input: `QUERY_PROBE` = open at rest, TRIGGERED with clips shorted
+  (clips soldered to door-module switch pads, 2026-10-17). Port 5 identified
+  (see 3.2). NOTE: the probe object's `last_query` status only refreshes when
+  `QUERY_PROBE` is issued — polling it via the Moonraker API without issuing
+  the command returns a stale value.
 - Pi stack on the OctoPi: Fluidd :8080, Moonraker :7125, OctoPrint untouched
   on :80 (autoconnect off until Anycubic re-plugged + by-id port selected).
 
@@ -902,10 +906,10 @@ channel numbers — trust measurements, not labels):**
 
 1. [x] Flash Klipper to Snapmaker board
 2. [x] Set up Pi with Klipper/Moonraker/Fluidd
-3. [ ] Wire relay for spindle control (mains side of 48V supply, 3.1; tap = hotend header pins 1/3)
+3. [x] Wire relay for spindle control (mains side of 48V supply, 3.1; tap = hotend header pins 1/3) — click audible on SET_PIN toggle
 4. [x] Verify endstop switches (QUERY_ENDSTOPS while pressing each lever)
 5. [x] Test basic motion (FORCE_MOVE jogs + G28; M3/M5 toggle verified by meter)
-6. [ ] Wire probe clips to door-switch module (port 5); verify with QUERY_PROBE
+6. [x] Wire probe clips to door-switch module (port 5); verify with QUERY_PROBE — open↔TRIGGERED on clip contact
 7. [ ] Run PCB_MESH on scrap clad board; check bit kisses surface at Z0 across the area
 8. [ ] Run test G-code file
 9. [ ] Set up Samba share (optional)
