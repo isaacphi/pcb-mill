@@ -41,6 +41,15 @@ uv run kicad_export.py board.kicad_pcb -o out [--side top|bottom | --double]
 
 `kicad-cli` is found via `$KICAD_CLI`, `PATH`, or the default macOS/Windows install location.
 
+**Web UI** (upload Gerbers in a browser, set parameters, convert on the machine
+host; machine control stays in Fluidd — see `docs/gerber-web-ui-design.md`):
+
+```
+uv run uvicorn web.app:app --port 8090        # then open http://localhost:8090
+# on the Pi, to enable one-click push of .nc files to Klipper:
+MOONRAKER_URL=http://127.0.0.1:7125 uv run uvicorn web.app:app --host 0.0.0.0 --port 8090
+```
+
 **Check before cutting:**
 
 ```

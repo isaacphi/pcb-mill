@@ -1,0 +1,13 @@
+body { font: 15px/1.45 system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+h1 { font-size: 1.5rem; }
+.dim { color: #777; font-weight: normal; font-size: .9em; }
+.err { color: #b00; font-weight: 600; }
+.ok { color: #070; font-weight: 600; }
+fieldset { margin: 1rem 0; border: 1px solid #ccc; border-radius: 6px; }
+label { display: inline-block; margin: .3rem 1rem .3rem 0; }
+input[type=file] { max-width: 260px; }
+button { font-size: 1rem; padding: .5rem 1.2rem; }
+table { border-collapse: collapse; }
+th, td { border: 1px solid #ccc; padding: .25rem .7rem; text-align: left; }
+pre { background: #f5f5f5; padding: .8rem; overflow-x: auto; font-size: .82rem; }
+img.preview { max-width: 100%; border: 1px solid #ccc; }

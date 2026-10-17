@@ -2,6 +2,11 @@
 
 Complete setup for running your Snapmaker Original as a dedicated CNC router with remote job control via web interface.
 
+> **See also:** `octopi-dual-stack.md` — hosting this stack on the existing OctoPrint Pi
+> instead of a dedicated one (surveyed, planned, not yet applied); `gerber-web-ui-design.md`
+> — design for a web UI that uploads Gerbers, runs mill.py on the Pi, and walks you
+> through multi-bit tool changes (supersedes Part 4 below once built).
+
 ## Overview
 
 This replaces the Snapmaker's proprietary controller with Klipper firmware + Raspberry Pi host, giving you:
@@ -245,6 +250,34 @@ shutdown_value: 0
 # cycle_time: 0.001  # 1kHz PWM
 # value: 0
 
+# Electrical touch probe - bit-to-copper contact on the door-switch input
+# (enclosure port, brain channel 5, endstop pin PC0). Clip 1: bit shank ->
+# signal, clip 2: copper pour -> GND. Keep the door switch OUT of circuit
+# (input must read OPEN unless the bit touches copper). 1k series resistor
+# + 100nF cap at the module end. Spindle OFF while probing; REMOVE clips
+# before M3!
+[probe]
+pin: ^!PC0
+z_offset: 0       # the bit tip IS the probe - no tip offset
+speed: 2          # mm/s, slow for reliable contact
+samples: 3
+samples_result: median
+sample_retract_dist: 1.0
+samples_tolerance: 0.02
+samples_tolerance_retries: 3
+
+# Surface height map of the PCB. Isolation cut_depth is only 0.2 mm while
+# board bow + clamp tilt is easily +-0.1-0.3 mm, so this is what makes
+# isolation depth consistent. Probe fresh copper BEFORE milling (after
+# isolation the copper has gaps and continuity is lost).
+[bed_mesh]
+speed: 120
+horizontal_move_z: 2
+mesh_min: 5,5         # keep probe points inside the copper and clear of
+mesh_max: 105,105     # pre-drilled holes/slots (or add faulty_region_*)
+probe_count: 7,7
+algorithm: bicubic
+
 # Arc resolution - key for smooth circles!
 [gcode_arcs]
 resolution: 0.5  # mm max segment length (default 1.0)
@@ -257,9 +290,21 @@ resolution: 0.5  # mm max segment length (default 1.0)
 # shaper_type_x: mzv
 # shaper_type_y: mzv
 
-[safe_z_home]
-home_xy_position: 60, 60
-z_hop: 5
+# Homing. Each linear rail has ONE microswitch at ONE end only (X/Y at the
+# min end, Z at the BOTTOM). Stock-style Z homing drives the carriage down
+# onto that switch - with a spindle and bit mounted that means plunging
+# into the workpiece. So: lift Z blindly, home X/Y on their switches, and
+# mark Z homed at a fake position. PCB_MESH finds the real Z=0 on the
+# copper. With axes: xyz this override runs for EVERY G28 variant (G28,
+# G28 X, ...), so no homing path can drive Z into the stock.
+[homing_override]
+axes: xyz
+gcode:
+  FORCE_MOVE STEPPER=stepper_z DISTANCE=20 VELOCITY=5   # lift clear of stock
+  G28 X
+  G28 Y
+  SET_KINEMATIC_POSITION Z=25 SET_HOMED=Z   # fake Z home, enables jogging/probing
+  {action_respond_info("Z fake-homed - run PCB_MESH with probe clips to set real Z=0")}
 
 # LED control (if you want status lights)
 [output_pin LED_R]
@@ -326,15 +371,49 @@ gcode:
   G0 X0 Y0 F3000  # Return to origin
   M84  # Motors off
 
-[gcode_macro PROBE_Z]
-description: Z probe (if you add touch probe)
+# Mesh the copper surface, then zero Z at the job origin. Run AFTER
+# homing, with the bit jogged 1-3 mm above the copper at the origin
+# corner, probe clips attached, spindle OFF. Klipper applies mesh offsets
+# on top of the G92 offset, so Z=0 ends up exactly at the copper surface
+# at the origin and the mesh tracks deviations relative to it.
+[gcode_macro PCB_MESH]
+description: Probe PCB surface mesh and set Z=0 on the copper
 gcode:
-  # Configure [probe] section first
-  # G38.2 Z-10 F100  # Probe down
-  # G92 Z0  # Set Z zero
-  {action_respond_info("Manual probe - not implemented")}
+  {% set x0 = params.X0|default(5)|float %}
+  {% set y0 = params.Y0|default(5)|float %}
+  {% set x1 = params.X1|default(105)|float %}
+  {% set y1 = params.Y1|default(105)|float %}
+  PROBE              # first touch establishes the true Z frame (Z was fake-homed)
+  G92 Z0
+  G0 Z5 F300
+  BED_MESH_CALIBRATE MESH_MIN={x0},{y0} MESH_MAX={x1},{y1}
+  G90
+  G0 X{x0} Y{y0} F3000
+  PROBE              # re-zero at origin with the mesh active
+  G92 Z0
+  G0 Z5
+  {action_respond_info("Mesh active. REMOVE probe clips before M3!")}
 
-[display_status]
+# gerber2gcode emits GRBL-isms that Klipper doesn't know - shim them so a
+# job doesn't die on "Unknown command" mid-file:
+[gcode_macro G94]
+description: GRBL feed-rate-mode no-op (Klipper is always mm/min)
+gcode:
+
+[gcode_macro M0]
+description: GRBL unconditional pause
+gcode:
+  PAUSE
+
+[gcode_macro M2]
+description: GRBL program end
+gcode:
+  CNC_END
+
+[gcode_macro M30]
+description: GRBL program end
+gcode:
+  CNC_END
 ```
 
 ### 2.5 Moonraker Configuration
@@ -398,7 +477,34 @@ MOSFET Gate → PB10 (via 10kΩ resistor to GND)
 48V Supply (-) → Spindle (-) → GND
 ```
 
-### 3.2 Optional: Speed Control
+### 3.2 Probe Wiring (Door-Switch Input)
+
+The enclosure door-switch module is just a normally-open microswitch wired
+between the port's endstop signal (PC0 on brain channel 5) and GND. We reuse
+that input for the PCB touch probe.
+
+**Before connecting anything to the MCU pin**: measure voltage between the
+spindle bit and Snapmaker-board GND with a multimeter. It must be ~0V. If
+the 48V supply leaks to the shaft, fix that first (or the GPIO dies).
+
+```
+Snapmaker board PC0 (door port, via module cable) ── 1kΩ ──┬── clip → bit shank
+                                                          100nF
+Snapmaker board GND (door port) ────────────────────────┬─┴── clip → copper pour
+```
+
+- Solder the two clip leads where the switch legs connect on the module
+  (remove the switch, or cut it out of circuit). The input must read OPEN
+  except when the bit touches copper - a closed door switch in parallel
+  would permanently read TRIGGERED.
+- 1kΩ series resistor + 100nF cap at the module end protects the GPIO and
+  filters spindle noise. Run the two leads as a twisted pair, away from
+  the 48V spindle wires.
+- Verify: `QUERY_PROBE` → "open"; touch bit to copper → "TRIGGERED".
+- If it never triggers, the module may be on the other enclosure port
+  (Snapmaker shipped both port 4 and port 5 variants); move it and retest.
+
+### 3.3 Optional: Speed Control
 
 If you want to replace the manual potentiometer with PWM:
 
@@ -512,6 +618,14 @@ Access from Mac: `⌘+K` → `smb://raspberrypi.local/gcodes`
 ---
 
 ## Part 5: Daily Workflow
+
+### Before every job (probing)
+
+1. Clamp board, attach probe clips (bit shank + copper), spindle OFF.
+2. `G28` - lifts Z, homes X/Y, fake-homes Z.
+3. Jog XY to the job origin corner, jog Z until the bit is 1-3 mm above the copper.
+4. `PCB_MESH X0=.. Y0=.. X1=.. Y1=..` - probes the grid, sets Z=0 on the copper.
+5. **Remove clips.** `M3`, start the file.
 
 ### Option A: Laptop → Pi (Current, Simple)
 
@@ -635,6 +749,35 @@ SET_PIN PIN=spindle VALUE=0  # Should release
 # Should be ~3.3V when VALUE=1
 ```
 
+### Limit Switches (Rails "Don't Stop")
+
+Each linear module has **one microswitch at one end only** (a small switch
+on the thin aluminum plate on the rail). There is no switch at the far end,
+and even at the switch end nothing "stops" the rail mechanically:
+
+- The stock firmware only watches the switches **during homing**. Afterwards
+  it relies on software limits (the M1025 travel values). Klipper works the
+  same way - after G28 it enforces `position_min/max` in software.
+- With motors off you can push a carriage past its switch and only hear a
+  click; nothing halts it. So rails that "don't stop at either end" is
+  normal and does NOT mean the switches are broken.
+
+But Klipper **depends** on the X/Y switches for homing, so verify them
+before the first G28:
+
+1优先级. `QUERY_ENDSTOPS` → expect `x:open y:open z:open`.
+2. Press each switch lever by hand (they're exposed on the rail plates) →
+   the matching axis should flip to `TRIGGERED`.
+3. If one never triggers: reseat the module's RJ45, then check continuity
+   across the switch (signal pin to GND pin on the module's connector).
+4. First `G28`: keep a hand on Emergency Stop. Each carriage must move
+   TOWARD its switch end (X/Y toward min). If one runs away, estop and
+   flip that axis's `dir_pin` inversion.
+
+Note Z's switch is at the BOTTOM of its rail (`position_endstop: -3.25`),
+which is exactly why this config never homes Z against it with a spindle
+mounted - see `[homing_override]`.
+
 ### Circles Still Angular
 
 Increase arc resolution:
@@ -657,6 +800,10 @@ Or pre-segment in `mill.py` output (modify gerber2gcode to emit G1 instead of G2
 | View Klipper log | `tail -f /tmp/klippy.log` |
 | View Moonraker log | `tail -f /tmp/moonraker.log` |
 | Convert gerbers | `~/pcb-mill/convert.sh name copper.gbr edge.gbr drill.drl` |
+| Home (safe: no Z plunge) | `G28` |
+| Mesh PCB + set Z=0 | `PCB_MESH X0=.. Y0=.. X1=.. Y1=..` (clips on, spindle off) |
+| Check probe | `QUERY_PROBE` (open / TRIGGERED when bit touches copper) |
+| Check endstops | `QUERY_ENDSTOPS` |
 | Emergency stop | Click "Emergency Stop" in Fluidd |
 | Spindle on | `M3` or macro button |
 | Spindle off | `M5` or macro button |
@@ -668,9 +815,12 @@ Or pre-segment in `mill.py` output (modify gerber2gcode to emit G1 instead of G2
 1. [ ] Flash Klipper to Snapmaker board
 2. [ ] Set up Pi with Klipper/Moonraker/Fluidd
 3. [ ] Wire SSR for spindle control
-4. [ ] Test basic motion (G0, G28, M3/M5)
-5. [ ] Run test G-code file
-6. [ ] Set up Samba share (optional)
-7. [ ] Add auto-conversion (optional)
+4. [ ] Verify endstop switches (QUERY_ENDSTOPS while pressing each lever)
+5. [ ] Test basic motion (G0, G28, M3/M5)
+6. [ ] Wire probe clips to door-switch module; verify with QUERY_PROBE
+7. [ ] Run PCB_MESH on scrap clad board; check bit kisses surface at Z0 across the area
+8. [ ] Run test G-code file
+9. [ ] Set up Samba share (optional)
+10. [ ] Add auto-conversion (optional)
 
 Questions or issues? Check Klipper Discord or UlinProject repo.

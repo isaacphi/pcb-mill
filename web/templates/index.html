@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>pcb-mill</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<h1>pcb-mill <span class="dim">— gerber → g-code</span></h1>
+<p class="dim">Machine control (jog, probe, bed mesh, run) stays in
+  <a href="http://anycubic-octopi.local:8080/" target="_blank">Fluidd</a>.
+  {% if moonraker %}Moonraker push: <b>enabled</b>.{% else %}Moonraker push:
+  disabled (set MOONRAKER_URL) — files are download-only.{% endif %}</p>
+
+<form method="post" action="/jobs" enctype="multipart/form-data">
+<fieldset>
+  <legend>Files</legend>
+  <label>Copper gerber <input type="file" name="copper" required></label>
+  <label>Side <select name="side">
+    <option value="bottom" selected>bottom (output mirrored)</option>
+    <option value="top">top</option>
+  </select></label>
+  <label>Edge cuts <input type="file" name="edge" required></label>
+  <label>Drill (PTH) <input type="file" name="drill" required></label>
+  <label>Drill (NPTH, optional — merged) <input type="file" name="drill2"></label>
+</fieldset>
+
+{% for op in ["isolation", "drill", "edge"] %}
+<fieldset>
+  <legend>{{ op }}</legend>
+  <label>Tool <select name="tool.{{ op }}">
+    {% for t in inv.tools %}
+    <option value="{{ t.id }}" {% if op in t.default_for %}selected{% endif %}>
+      {{ t.name }}</option>
+    {% endfor %}
+  </select></label>
+  {% for key, val in inv.operations[op].items() %}
+    {% if key != "tool" %}
+  <label>{{ key }} <input name="{{ op }}.{{ key }}" value="{{ val }}" size="7"></label>
+    {% endif %}
+  {% endfor %}
+</fieldset>
+{% endfor %}
+
+<button type="submit">Convert</button>
+</form>
+</body>
+</html>

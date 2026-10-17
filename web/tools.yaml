@@ -1,0 +1,44 @@
+# Physical tool inventory + machine defaults for the web UI.
+# v1 ships with the single 0.8 mm end mill; add tools here as you get them.
+# The per-operation cutting defaults mirror mill_config.yaml — edit either to
+# change what the upload form pre-fills.
+
+machine:
+  safe_height: 1.0
+  dpi: 1500
+
+tools:
+  - id: em08
+    name: "0.8 mm end mill"
+    type: endmill # endmill bits can plunge AND bore; twist drills can only plunge
+    diameter: 0.8
+    spindle_speed: 20000
+    default_for: [isolation, drill, edge]
+
+# Per-operation cutting parameters (seeded from mill_config.yaml).
+# Each operation names the inventory tool the form should pre-select.
+operations:
+  isolation:
+    tool: em08
+    feed_rate: 250
+    plunge_rate: 80
+    cut_depth: 0.2
+    passes: 1
+    step_over: 0.4
+    isolation_border: 0
+  drill:
+    tool: em08
+    feed_rate: 100
+    plunge_rate: 50
+    cut_depth: 1.9
+    total_depth: 1.9
+    retract_height: 1.0
+    bore_tolerance: 0.05
+    bore_step_down: 0.4
+  edge:
+    tool: em08
+    feed_rate: 220
+    plunge_rate: 45
+    cut_depth: 0.4
+    total_depth: 1.6
+    tabs: false

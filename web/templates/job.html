@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>pcb-mill — {{ name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  {% if st.state in ["queued", "converting"] %}<meta http-equiv="refresh" content="3">{% endif %}
+</head>
+<body>
+<h1>Job {{ name }} <span class="dim">— {{ st.state }}{% if st.side %}, {{ st.side }} copper{% endif %}</span></h1>
+<p><a href="/">← new job</a></p>
+
+{% if st.error %}<p class="err">{{ st.error }}</p>{% endif %}
+
+{% if st.report %}
+<h2>Holes (vs {{ inv_note | default("drill bit") }})</h2>
+<table>
+  <tr><th>diameter</th><th>count</th><th>machining</th></tr>
+  {% for r in st.report %}
+  <tr><td>{{ "%.2f"|format(r.diameter) }} mm</td><td>{{ r.count }}</td><td>{{ r.method }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if st.state == "done" %}
+  {% if st.toolpaths %}
+<h2>Toolpaths</h2>
+<img class="preview" src="/jobs/{{ name }}/files/{{ st.toolpaths }}" alt="toolpaths">
+  {% endif %}
+<h2>Files</h2>
+<ul>
+  {% for f in st.files %}
+  <li><a href="/jobs/{{ name }}/files/out/{{ f }}">{{ f }}</a></li>
+  {% endfor %}
+</ul>
+  {% if st.sent %}<p class="ok">Sent to machine: {{ st.sent|join(", ") }} — open
+    <a href="http://anycubic-octopi.local:8080/" target="_blank">Fluidd</a> to run them.</p>
+  {% elif moonraker %}
+<form method="post" action="/jobs/{{ name }}/send"><button>Send to machine</button></form>
+  {% else %}
+<p class="dim">Download the .nc files and upload them in Fluidd.</p>
+  {% endif %}
+{% endif %}
+
+{% if log %}
+<h2>Log</h2>
+<pre>{{ log }}</pre>
+{% endif %}
+</body>
+</html>
