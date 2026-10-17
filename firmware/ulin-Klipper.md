@@ -1,0 +1,268 @@
+## Description
+A full featured clipper port for this printer, allowing you to overclock and expand the capabilities ("pressure advance", "input shaper", "bl-touch", "nozzle cleaner", "fan control", ...) of this printer using a single board computer and other additional microcontrollers.
+
+## Disclaimer
+The firmware presented here is provided as is, I am not responsible for your damaged devices. All information described here is solely my experience and can be both useful and harmful to the end user. You can reflash your printers only at your own risk. Damage to your device can occur at any stage of the end user's actions. All images and firmware presented here are the property of their authors.
+
+Snapmaker is a registered trademark, to which I have no relation, you can always contact the official contacts listed on the website snapmaker.com. All rights reserved.
+
+## Firmware
+| name | value | stable |
+| ---- | ----- | ----- |
+| Klipper_6_2025Demo460800.Bin | Experimental current (as of 2025) demo firmware klipper. Licensed under <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">GPLv3</a> | +-(only tests) |
+| Klipper_10_v0.12.0_2025.zip | Relevant for start 2025, functionality is not cut. Firmware in the archive, you need to unpack and select the desired baudrate, if you do not know the baudrate take 250000, ONLY UART (UART via USB or directly). Licensed under <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">GPLv3</a> | +(only tests) |
+| Klipper_12_v0.13.0_2025.zip | Relevant for 2025-2026, functionality is not cut. Firmware in the archive, you need to unpack and select the desired baudrate, if you do not know the baudrate take 250000, ONLY UART (UART via USB or directly). Licensed under <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">GPLv3</a> | + |
+
+## How to reflash?
+1. Copy any file and rename it to Update.Bin to a USB disk formatted in Fat32.
+2. Turn off the printer and insert the USB disk into the USB port.
+3. Turn on the printer. If the LED changes as below, the update is successful.
+- The blue LED blinks slowly for about 5 seconds.
+- Then the LED turns off for about 2 seconds.
+- The LED starts blinking quickly.
+4. The flashing process is complete.
+
+## Don't forget to remove the flash drive
+The "klipper" firmware does not delete the "Update.Bin" file after flashing, so you can constantly reflash the device when you turn it on (even if you don't want to). It is better to either remove the flash drive or delete the "Update.Bin" file on it. In the Marlin firmware, this is done automatically.
+
+## Is it possible to return to the factory firmware?
+At any time, in the same way, by dropping the original Update.bin onto a flash drive.
+
+## 921600/500000/460800/250000?
+I can't give you a definitive answer, but this printer works fine at 500,000 baud and above. I currently use 921600 regularly, but Klipper officially recommends 250,000, and according to official statements, that should be enough, but the overall command throughput may be low.
+
+<i>After switching to a detachable UART cable (previously, it was simply soldered on, which was a nuisance), I once experienced an MCU timeout and stopped using the 921600, but the 460800 is quite stable under all conditions.</i>
+
+## Which single board computer to use?
+This printer is not demanding on the performance of the single board computer, but it is recommended to take a single board computer not lower than the Raspberry pi 3, Raspberry pi 4/5, and zero 2w versions (be careful with the zero versions, you only have 512 MB of RAM or even less because of the graphics processor, this can greatly limit you). You can also consider similar solutions based on OrangePi, NanoPi I only determined the minimum system requirements on which the printer works perfectly.
+
+## How do I know if the firmware has loaded and is working?
+When the microcontroller is turned on, the red LED on the "brains" lights up, after activating the "clipper" on the single-board computer, the LED on the "brains" stops lighting up (or continues to light up, if you did not specify this in the configuration).
+
+## I want to add additional sensors that were never in the printer, what to do?
+You can bring out many contacts from the main gd32f105 brains, but the best solution is to use an additional mcu.
+Klipper allows you to connect many different microcontrollers, it all depends on your choice. The most optimal, complete and simple solution is to use the rp2040 (which, according to the new firmware, runs at 200 MHz!), and requires a simple usb connection to connect to klipper.
+
+I also added a few other firmware for mcu, these are stm32f103 and atmega328p. I do not recommend using the firmware based on atmega328p, as it is very stripped down and was intended only for those people who just want to add very useful functionality to the printer from the factory (backlight, fan control).
+
+## Run "printer.cfg"
+Here I can't give exact recommendations what your "ideal" and correct configuration should be, it may differ, since my device is not so original. Speed ​​settings, acceleration, extruder steps, everything was adapted to the factory ones from the factory firmware. Just use it as a starter!
+
+```toml
+[include fluidd.cfg]
+
+[virtual_sdcard]
+path: /home/alarm/printer_data/gcodes
+on_error_gcode: CANCEL_PRINT
+
+[mcu]
+serial: /dev/ttyS0 # or usb device
+baud: 250000 # or 460800
+restart_method: command
+
+[printer]
+kinematics: cartesian
+max_velocity: 300 # test 140
+max_accel: 3600 # default 1000
+max_z_velocity: 20 # default 5, The default value is 5. Note that the printer's Z-axis rotation speed is heavily limited from the factory. This is normal, but the problem is that even in the slicer, this value is usually set to 15 (while in the configuration, it's 5), and even the Marlin firmware itself always limits the speed during movement, which raises questions (after all, the slicer configuration was designed for this printer, but even its factory settings are ignored by the firmware itself).
+max_z_accel: 450 #  default 100
+square_corner_velocity: 8.0 # or 4.0/7.0
+
+[stepper_x]
+# brain_channel num: 1
+step_pin: PB5
+dir_pin: !PB6
+enable_pin: !PB7
+microsteps: 16
+rotation_distance: 8 # 200 * 16 / 400.00
+endstop_pin: ^!PC11
+position_endstop: -4
+position_min: -4
+position_max: 120
+# If you need more than 120, check your configuration. You can get by with 124-125, or even 126... but I've noticed that the maximum value varies depending on the axle, and this is the factory value; for reasons unknown to me, it fluctuates between 1 and 2 or 3. To test, simply increase the maximum value to 126, and then gradually increase it by 1 from 120. If you hear a knocking sound, that's your maximum value. It's best to never exceed or even set the limit at which you'll hear a knocking sound.
+
+homing_speed: 12
+
+[stepper_y]
+# brain_channel num: 2
+step_pin: PB8
+dir_pin: !PB9
+enable_pin: !PB4
+microsteps: 16
+rotation_distance: 8 # 200 * 16 / 400.00
+endstop_pin: ^!PC10
+position_endstop: -4
+position_min: -4
+position_max: 120
+# If you need more than 120, check your configuration. You can get by with 124-125, or even 126... but I've noticed that the maximum value varies depending on the axle, and this is the factory value; for reasons unknown to me, it fluctuates between 1 and 2 or 3. To test, simply increase the maximum value to 126, and then gradually increase it by 1 from 120. If you hear a knocking sound, that's your maximum value. It's best to never exceed or even set the limit at which you'll hear a knocking sound.
+
+homing_speed: 12
+
+[stepper_z]
+# brain_channel num: 3
+step_pin: PB3
+dir_pin: !PD2
+enable_pin: !PC12
+microsteps: 16
+rotation_distance: 8 # 200 * 16 / 400.00
+endstop_pin: ^!PA8
+position_endstop: -3.25
+position_min: -3.25
+position_max: 125.5
+homing_speed: 9
+
+[extruder]
+# brain_channel num: RJ45
+step_pin: PA4
+dir_pin: !PA1
+enable_pin: !PA0
+microsteps: 16
+rotation_distance: 34.5572354212 # 200 * 16 / 92.60 for default e-steps 92.60
+heater_pin: !PB10
+sensor_type: ATC Semitec 104GT-2
+sensor_pin: PC5
+min_temp: 0
+max_temp: 280
+control = pid
+pid_kp = 36.524
+pid_ki = 2.387
+pid_kd = 139.704
+max_power: 1.0
+pwm_cycle_time: 0.1
+
+nozzle_diameter: 0.4
+filament_diameter: 1.75
+#pressure_advance: 0.05 # only test
+
+
+[output_pin LED_R]
+pin: mcu:PC7
+value:0
+
+[output_pin LED_B]
+pin: mcu:PC8
+value:0
+
+[output_pin GATE_CTRL]
+pin: mcu:PB0
+value:1
+
+[output_pin MAIN_POWER]
+pin: mcu:PF2
+value:1
+
+[output_pin STEPPER_POWER]
+pin: mcu:PF1
+value:1
+
+[heater_bed]
+heater_pin: PA7
+sensor_pin: PC4
+sensor_type: EPCOS 100K B57560G104F
+min_temp: 0
+max_temp: 85
+control: pid
+pid_kp: 65.934
+pid_ki: 2.730
+pid_kd: 398.078
+pwm_cycle_time: 0.1
+max_power: 1.0
+
+[bed_mesh]
+speed: 80
+horizontal_move_z: 1
+mesh_min: 10, 10
+mesh_max: 115, 115
+probe_count: 3, 3
+algorithm: lagrange
+bicubic_tension: 0.2
+
+[bed_mesh default]
+version = 1
+points =
+ 	  -0.500000, -0.100000, 0.200000
+ 	  -0.400000, -0.100000, 0.200000
+ 	  -0.400000, -0.100000, 0.300000
+x_count = 3
+y_count = 3
+mesh_x_pps = 2
+mesh_y_pps = 2
+algo = lagrange
+tension = 0.2
+min_x = 10.0
+max_x = 115.0
+min_y = 10.0
+max_y = 115.0
+
+[firmware_retraction]
+retract_length: 5.0 # from the factory
+retract_speed: 60 # from the factory
+unretract_extra_length: 0.0 # from the factory
+unretract_speed: 60 # from the factory
+
+#[firmware_retraction]
+#retract_length: 0.6
+#retract_speed: 40
+#unretract_extra_length: 0.0
+#unretract_speed: 20
+
+[gcode_arcs]
+#resolution: 1.0
+
+[gcode_macro T0]
+gcode:
+
+[gcode_macro M1005]
+gcode:
+
+[force_move]
+enable_force_move: 1
+
+[homing_override]
+gcode:
+    # To protect the thermal barrier, nozzle, and platform, we always try to raise the Z-axis, 
+    # as it was in the original firmware. Don't leave the printer at home with the home coordinates completely 
+    # lost and the Z-axis fully extended!
+    {% if 'z' not in printer.toolhead.homed_axes %}
+        FORCE_MOVE STEPPER=stepper_z DISTANCE=10 VELOCITY=5
+    {% else %}
+        {% if printer.toolhead.position.z < 100 %}
+            G91
+            G1 Z10 F1200
+            G90
+        {% endif %}
+    {% endif %}
+
+    G28 X
+    G28 Y
+    G28 Z
+    
+    G1 Z-1 F1200
+
+#[stepper_z2]
+# brain_channel num: 5
+#step_pin: PC2
+#dir_pin: !PC1
+#enable_pin: !PC3
+#microsteps: 16
+#rotation_distance: 8 # 200 * 16 / 400.00
+#endstop_pin: ^!PC0
+#position_endstop: -3.25
+#pposition_min: -3.25
+#position_max: 125.5
+#homing_speed: 9
+```
+Don't forget to check the sensors on your device before printing, PID calibration (extruder and bed), manual bed height calibration, ... and only then the print itself.
+
+## Resonance compensation
+<a href="../resonances/Readme.md">See</a>
+
+## Can Luban be used? (slicer)
+Most likely not, Luban does rollbacks strangely and I don't even know why, no oddities with rollbacks to gcode from Cura or similar slicers were noticed. But for starters, you can try to print test prints on Luban (on large models such oddities are less noticeable).
+
+## Cura (slicer)
+<a href="../cura/Readme.md">See</a>
+
+## Klipper machine tweaks
+<a href="./Klipper_Machine_Tweaks.md">See</a>
+

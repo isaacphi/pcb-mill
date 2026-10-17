@@ -186,7 +186,7 @@ Create `/home/pi/printer_data/config/printer.cfg`:
 
 [mcu]
 serial: /dev/ttyUSB0  # or /dev/ttyAMA0 if UART
-baud: 460800
+baud: 250000  # must match the flashed firmware build (firmware/README.md)
 restart_method: command
 
 [printer]
@@ -238,7 +238,8 @@ homing_speed: 9
 
 # Spindle control - on/off via relay (switches 48V supply mains input, see doc 3.1)
 [output_pin spindle]
-pin: PB10  # Was heater pin, now drives the relay coil (24VDC)
+pin: !PB10  # Was heater pin (active-low per UlinProject heater_pin: !PB10),
+            # now drives the relay coil (24VDC). Verify with meter before wiring load.
 pwm: False
 value: 0
 shutdown_value: 0
@@ -332,7 +333,7 @@ value: 1
 timeout: 300
 
 [virtual_sdcard]
-path: /home/pi/printer_data/gcodes
+path: /home/site3/printer_data/gcodes  # OctoPi user is site3
 
 [force_move]
 enable_force_move: 1
