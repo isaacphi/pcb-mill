@@ -415,6 +415,9 @@ gcode:
   CNC_END
 
 [gcode_macro M30]
+# Klipper's [virtual_sdcard] registers its own M30 (file delete); take the
+# name back for the GRBL-style program-end shim.
+rename_existing: M30.1
 description: GRBL program end
 gcode:
   CNC_END
@@ -428,6 +431,9 @@ Edit `/home/pi/printer_data/config/moonraker.conf`:
 [server]
 host: 0.0.0.0
 port: 7125
+# Default is /tmp/klippy_uds - must point at klippy's -a socket or Moonraker
+# retries forever in silence and every /printer/* endpoint 404s.
+klippy_uds_address: /home/site3/printer_data/comms/klippy.sock
 
 [file_manager]
 enable_inotify_warnings: True
