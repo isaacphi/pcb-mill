@@ -241,11 +241,13 @@ homing_speed: 9
 
 # Spindle control - on/off via relay (switches 48V supply mains input, see doc 3.1)
 [output_pin spindle]
-# BED HEATER output (free in CNC mode; toolhead heater PB10 would need a cable
-# splice since the CNC module occupies the toolhead connector). Non-inverted
-# per UlinProject + cratchat heater_bed configs. Tap: bed connector pins 1(+24V)
-# and 3 (switched return); relay coil + 1N4007 flyback across that pair.
-pin: PA7
+# TOOLHEAD HEATER output (active-low per UlinProject + cratchat heater configs).
+# On this unit the hotend header is unused in CNC mode (self-contained 48V
+# spindle), so the relay tap is a pluggable lead on header pin 1 (+24V
+# permanent) / pin 3 (switched return) + 1N4007 across the coil.
+# Meter-verified on this machine. Spare: bed-heater output PA7 (bed connector
+# pins 1/3, also verified) if the header is ever needed for a toolhead module.
+pin: !PB10
 value: 0
 shutdown_value: 0
 pwm: False
@@ -253,10 +255,10 @@ value: 0
 shutdown_value: 0
 
 # Optional: spindle speed PWM (if you add PWM-to-voltage converter).
-# NOTE: PA7 is the spindle relay pin; PWM speed would use the spare toolhead
-# heater output !PB10 (also meter-verified) or replace the relay with a MOSFET.
+# NOTE: !PB10 is the spindle relay pin; PWM speed would use the spare bed
+# heater output PA7 (also meter-verified) or replace the relay with a MOSFET.
 # [output_pin spindle_speed]
-# pin: !PB10
+# pin: PA7
 # pwm: True
 # cycle_time: 0.001  # 1kHz PWM
 # value: 0
@@ -481,16 +483,17 @@ On the AC side the contacts see ~2 A with zero-crossing — any relay rated
 ≥10 A/250 VAC handles it indefinitely, and the coil side is galvanically
 isolated from the board.
 
-**Tap point (meter-verified on our unit): the 6-pin heated-bed connector.**
-The bed heater channel (PA7) is unused in CNC mode and its connector is free,
-so the relay lead is a small plug-in harness — no splicing, and unplugging it
-returns the machine to 100% stock. The toolhead heater output (!PB10, toolhead
-connector pins 1+3) was also verified working, but that connector is occupied
-by the CNC module during milling; it stays as a documented spare.
+**Tap point (meter-verified on our unit): the hotend header, pins 1 + 3
+(!PB10).** On this machine the hotend header is unused in CNC mode — the 48 V
+ER11 spindle is self-contained and doesn't plug into it — so the relay lead is
+a pluggable tap on header pin 1 (+24 V permanent) / pin 3 (switched return).
+If a toolhead module ever needs the header, move the tap to the spare:
+the 6-pin heated-bed connector pins 1+3 (PA7, also meter-verified) and set
+`pin: PA7` (non-inverted) in `[output_pin spindle]`.
 
 ```
-Bed-heater connector pin 1 (+24V permanent) ──→ relay coil (24VDC) +
-Bed-heater connector pin 3 (switched return) ─→ relay coil −
+Hotend header pin 1 (+24V permanent) ────────→ relay coil (24VDC) +
+Hotend header pin 3 (switched return) ───────→ relay coil −
                                                 + 1N4007 flyback diode across
                                                   coil (band toward the +24V leg)
 
@@ -505,13 +508,12 @@ Mains neutral ──────────────────→ 48V supp
   output designed for heater-cartridge amps. Skip the 5V "Arduino relay
   modules" (wrong coil voltage, optocoupler you don't need); a plain 24VDC-coil
   panel/DIN relay (Finder 40.52-class) is the right part. Some have the flyback
-  diode built in. The bed connector is a standard 6-pin; build the tap from a
-  mating pigtail (or a sacrificed bed cable).
+  diode built in.
 - Tradeoffs of mains switching: ~100 ms supply spin-up on `M3`, and the spindle
   **coasts** on `M5`/estop while the supply caps bleed (motion stops instantly;
   the bit doesn't). Fine for PCB milling — just don't reach in until it stops.
 - A mechanical relay can't be PWM'd; if speed control is ever wanted it moves
-  to the spare toolhead heater output (see 3.3), with the relay staying on/off.
+  to the spare bed-heater output (see 3.3), with the relay staying on/off.
 
 **Alternative (only if you need fast spindle kill)**: switch the 48 V DC output
 instead. Contacts must be explicitly DC-rated ≥48 V/10 A (check the datasheet
@@ -551,21 +553,21 @@ Snapmaker board GND (door port) ────────────────
 
 ### 3.3 Optional: Speed Control
 
-If you want to replace the manual potentiometer with PWM (PA7 is taken by the
-spindle relay, so use the spare toolhead heater output !PB10):
+If you want to replace the manual potentiometer with PWM (!PB10 is taken by
+the spindle relay, so use the spare bed-heater output PA7):
 
 **PWM-to-0-5V Converter Module** (~$10):
 ```
-!PB10 (PWM out, toolhead connector pin 3) → Converter VCC
+PA7 (PWM out, bed connector pin 3) → Converter VCC
 Converter VCC → 5V
-Converter GND → GND (toolhead connector pin 7)
+Converter GND → GND
 Converter OUT → Spindle speed control input
 ```
 
 Config:
 ```yaml
 [output_pin spindle_speed]
-pin: !PB10
+pin: PA7
 pwm: True
 cycle_time: 0.001
 value: 0
