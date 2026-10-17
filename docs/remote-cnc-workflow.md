@@ -527,6 +527,11 @@ The enclosure door-switch module is just a normally-open microswitch wired
 between the port's endstop signal (PC0 on brain channel 5) and GND. We reuse
 that input for the PCB touch probe.
 
+**On this unit the probe port is the one labeled "5"** — verified empirically:
+door module in port 5, button presses flip `QUERY_PROBE` open↔TRIGGERED (see
+Commissioning Log). The door module stays plugged in permanently and becomes
+the probe junction box.
+
 **Before connecting anything to the MCU pin**: measure voltage between the
 spindle bit and Snapmaker-board GND with a multimeter. It must be ~0V. If
 the 48V supply leaks to the shaft, fix that first (or the GPIO dies).
@@ -858,17 +863,52 @@ Or pre-segment in `mill.py` output (modify gerber2gcode to emit G1 instead of G2
 
 ---
 
+## Commissioning Log (verified on this machine, 2026-10-17)
+
+**Port map (physical label → function; labels do NOT match UlinProject
+channel numbers — trust measurements, not labels):**
+
+| Port label | Function | Notes |
+|---|---|---|
+| 1 | old toolhead breakout | unused under Klipper; stock firmware wanted it plugged in |
+| 2 | X linear module (channel 1) | motor + endstop verified |
+| 3 | Y linear module (channel 2) | motor + endstop verified |
+| 4 | Z linear module (channel 3) | motor + endstop verified (Z was on 5/6 in the stock days) |
+| 5 | **probe / door-switch port (channel 5, PC0)** | verified: door module flips QUERY_PROBE |
+| 6 | hotend header (8-pin) | heater = !PB10 pins 1(+24V)/3(switched); thermistor PC5 |
+
+**Verified working:**
+- Klipper v0.13.0 (UlinProject build, 250000 baud) flashed via USB stick;
+  stock rollback file in `firmware/`. Touchscreen dark under Klipper (normal).
+- klippy↔MCU handshake, homed_axes xyz after G28 (override: Z lifts 20mm,
+  X/Y home on switches, Z fake-homed at 25).
+- All three endstops by hand-press (x=PC11, y=PC10, z=PA8). User reports
+  homing never worked on stock — presumably port/channel mismatch.
+- Spindle switch output: BOTH !PB10 (hotend header) and PA7 (bed connector)
+  meter-verified toggling 0↔24V. Chosen: !PB10 (header free; 48V ER11
+  spindle is self-contained). Earlier "no swing" scare was SSH toggle runs
+  dying, not hardware.
+- Probe input: `QUERY_PROBE` = open at rest; port 5 identified (see 3.2).
+- Pi stack on the OctoPi: Fluidd :8080, Moonraker :7125, OctoPrint untouched
+  on :80 (autoconnect off until Anycubic re-plugged + by-id port selected).
+
+**Machine quirks:**
+- Stock firmware talks 115200 baud on the CH340 (by-id
+  `usb-1a86_USB_Serial-if00-port0`); Klipper build is 250000.
+- User previously toggled spindle by hand; hotend breakout was only plugged
+  in because stock firmware expected it.
+
 ## Next Steps
 
-1. [ ] Flash Klipper to Snapmaker board
-2. [ ] Set up Pi with Klipper/Moonraker/Fluidd
-3. [ ] Wire relay for spindle control (mains side of 48V supply, 3.1)
-4. [ ] Verify endstop switches (QUERY_ENDSTOPS while pressing each lever)
-5. [ ] Test basic motion (G0, G28, M3/M5)
-6. [ ] Wire probe clips to door-switch module; verify with QUERY_PROBE
+1. [x] Flash Klipper to Snapmaker board
+2. [x] Set up Pi with Klipper/Moonraker/Fluidd
+3. [ ] Wire relay for spindle control (mains side of 48V supply, 3.1; tap = hotend header pins 1/3)
+4. [x] Verify endstop switches (QUERY_ENDSTOPS while pressing each lever)
+5. [x] Test basic motion (FORCE_MOVE jogs + G28; M3/M5 toggle verified by meter)
+6. [ ] Wire probe clips to door-switch module (port 5); verify with QUERY_PROBE
 7. [ ] Run PCB_MESH on scrap clad board; check bit kisses surface at Z0 across the area
 8. [ ] Run test G-code file
 9. [ ] Set up Samba share (optional)
-10. [ ] Add auto-conversion (optional)
+10. [ ] Add auto-conversion (optional — superseded by web/ app, see gerber-web-ui-design.md)
 
 Questions or issues? Check Klipper Discord or UlinProject repo.
