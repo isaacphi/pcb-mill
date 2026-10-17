@@ -1,0 +1,41 @@
+# Fluidd on port 8080 (OctoPrint owns 80/443 via haproxy; Moonraker on 7125)
+server {
+    listen 8080 default_server;
+    server_name _;
+
+    root /home/site3/fluidd;
+    index index.html;
+
+    access_log /var/log/nginx/fluidd-access.log;
+    error_log /var/log/nginx/fluidd-error.log;
+
+    client_max_body_size 500M;  # large .nc uploads
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+    }
+
+    location /websocket {
+        proxy_pass http://127.0.0.1:7125/websocket;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 86400;
+    }
+
+    location ~ ^/(printer|api|access|machine|server)/ {
+        proxy_pass http://127.0.0.1:7125;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        client_max_body_size 500M;
+    }
+}

@@ -1,0 +1,18 @@
+[Unit]
+Description=Klipper 3D Printer Firmware SV1 (Snapmaker Original CNC)
+After=network-online.target
+Wants=udev.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=simple
+User=site3
+SupplementaryGroups=dialout
+RemainAfterExit=yes
+WorkingDirectory=/home/site3/klipper
+EnvironmentFile=/home/site3/printer_data/systemd/klipper.env
+ExecStart=/home/site3/klippy-env/bin/python $KLIPPER_ARGS
+Restart=always
+RestartSec=10

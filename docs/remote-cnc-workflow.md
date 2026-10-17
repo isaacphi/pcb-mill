@@ -185,7 +185,10 @@ Create `/home/pi/printer_data/config/printer.cfg`:
 # Based on UlinProject pin mappings
 
 [mcu]
-serial: /dev/ttyUSB0  # or /dev/ttyAMA0 if UART
+# Snapmaker CH340 on the OctoPi (stable by-id; CH340s have no unique serial,
+# so don't plug in a second CH340 device). Stock firmware talks 115200,
+# Klipper build is 250000 (matches firmware/ binary).
+serial: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
 baud: 250000  # must match the flashed firmware build (firmware/README.md)
 restart_method: command
 
@@ -434,6 +437,8 @@ queue_gcode_uploads: False
 
 [authorization]
 trusted_clients:
+  127.0.0.0/8     # localhost - REQUIRED (Fluidd nginx proxy + pcb-mill app)
+  ::1/128
   192.168.1.0/24  # Your local network
   10.0.0.0/24     # VPN if applicable
 
