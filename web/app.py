@@ -96,7 +96,7 @@ async def _convert(job: Path, copper: str, side: str, edge: str, drill: str, con
 async def index(request: Request):
     inv = config_render.load_inventory()
     return templates.TemplateResponse(request=request, name="index.html", context={
-        "inv": inv, "moonraker": bool(moonraker.url())})
+        "inv": inv, "moonraker": moonraker.available(), "fluidd": moonraker.fluidd()})
 
 
 @app.post("/jobs")
@@ -157,9 +157,15 @@ async def job_page(request: Request, name: str):
         raise HTTPException(404)
     st = _status(job)
     log = (job / "log.txt").read_text(errors="replace")[-4000:] if (job / "log.txt").exists() else ""
+    elapsed = None
+    if st.get("created"):
+        try:
+            elapsed = int(time.time() - time.mktime(time.strptime(st["created"], "%Y-%m-%d %H:%M:%S")))
+        except ValueError:
+            pass
     return templates.TemplateResponse(request=request, name="job.html", context={
-        "name": name, "st": st, "log": log,
-        "moonraker": bool(moonraker.url())})
+        "name": name, "st": st, "log": log, "elapsed": elapsed,
+        "moonraker": moonraker.available(), "fluidd": moonraker.fluidd()})
 
 
 @app.get("/jobs/{name}/files/{path:path}")
@@ -178,7 +184,7 @@ async def send_to_machine(name: str):
         raise HTTPException(409, "job not finished")
     sent = []
     for fn in st["files"]:
-        moonraker.upload(job / "out" / fn, subdir=name)
+        moonraker.upload(job / "out" / fn, subdir=f"pcb-mill/{name}")
         sent.append(fn)
     _set_status(job, sent=sent)
     return RedirectResponse(f"/jobs/{name}", status_code=303)

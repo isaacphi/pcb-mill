@@ -191,6 +191,12 @@ App runs at `http://anycubic-octopi.local:8081/` and talks to the local
 Moonraker (`MOONRAKER_URL=http://127.0.0.1:7125`). Conversion of the AQI
 test board (1000 dpi) is expected ~5–15 min on the 3B.
 
+**File handoff**: "Send to machine" writes the .nc files straight into
+`~/printer_data/gcodes/pcb-mill/<job>/` (Moonraker's watcher makes them
+appear in Fluidd instantly — no HTTP upload needed when the app runs on the
+Pi; the Moonraker API is the fallback for running the app on a laptop).
+Override the location with `GCODE_DIR`, the Fluidd link with `FLUIDD_URL`.
+
 ## Rollback
 
 Klipper stack removal is clean and doesn't affect OctoPrint:

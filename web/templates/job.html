@@ -12,6 +12,18 @@
 
 {% if st.error %}<p class="err">{{ st.error }}</p>{% endif %}
 
+{% if st.state in ["queued", "converting"] %}
+<div class="processing">
+  <div class="spinner"></div>
+  <div>
+    <p><b>Converting…</b>{% if elapsed is not none %} {{ elapsed // 60 }}:{{ "%02d"|format(elapsed % 60) }} elapsed{% endif %}</p>
+    <p class="dim">Parsing drills → rendering gerbers → tracing contours → writing G-code.
+    This takes a couple of minutes on a fast machine, ~5–15 min on the Pi — the page
+    refreshes itself.</p>
+  </div>
+</div>
+{% endif %}
+
 {% if st.report %}
 <h2>Holes (vs {{ inv_note | default("drill bit") }})</h2>
 <table>
@@ -33,8 +45,8 @@
   <li><a href="/jobs/{{ name }}/files/out/{{ f }}">{{ f }}</a></li>
   {% endfor %}
 </ul>
-  {% if st.sent %}<p class="ok">Sent to machine: {{ st.sent|join(", ") }} — open
-    <a href="http://anycubic-octopi.local:8080/" target="_blank">Fluidd</a> to run them.</p>
+  {% if st.sent %}<p class="ok">Sent to machine: {{ st.sent|join(", ") }} — in Fluidd under
+    <b>pcb-mill/{{ name }}</b>. <a href="{{ fluidd }}" target="_blank">Open Fluidd</a> to run them.</p>
   {% elif moonraker %}
 <form method="post" action="/jobs/{{ name }}/send"><button>Send to machine</button></form>
   {% else %}

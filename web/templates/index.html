@@ -8,9 +8,9 @@
 <body>
 <h1>pcb-mill <span class="dim">— gerber → g-code</span></h1>
 <p class="dim">Machine control (jog, probe, bed mesh, run) stays in
-  <a href="http://anycubic-octopi.local:8080/" target="_blank">Fluidd</a>.
-  {% if moonraker %}Moonraker push: <b>enabled</b>.{% else %}Moonraker push:
-  disabled (set MOONRAKER_URL) — files are download-only.{% endif %}</p>
+  <a href="{{ fluidd }}" target="_blank">Fluidd</a>.
+  {% if moonraker %}Push to machine: <b>enabled</b>.{% else %}Push to machine:
+  disabled (no gcodes dir or MOONRAKER_URL) — files are download-only.{% endif %}</p>
 
 <form method="post" action="/jobs" enctype="multipart/form-data">
 <fieldset>

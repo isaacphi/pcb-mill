@@ -15,12 +15,35 @@ os.environ["PCB_MILL_JOBS"] = tempfile.mkdtemp(prefix="pcbmill-test-jobs-")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from web import app as webapp  # noqa: E402
-from web import config_render, excellon  # noqa: E402
+from web import config_render, excellon, moonraker  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 BOARD = ROOT / "board"
 PTH = BOARD / "AQI esp32 pcb-PTH.drl"
 NPTH = BOARD / "AQI esp32 pcb-NPTH.drl"
+
+
+# ---------- moonraker handoff ----------
+
+
+def test_upload_direct_write(tmp_path, monkeypatch):
+    """On the Pi the gcodes dir exists locally: files land there directly."""
+    monkeypatch.setenv("GCODE_DIR", str(tmp_path))
+    monkeypatch.delenv("MOONRAKER_URL", raising=False)
+    src = tmp_path / "onesided.nc"
+    src.write_text("G1 X1\n")
+    out = moonraker.upload(src, subdir="pcb-mill/job42")
+    assert (tmp_path / "pcb-mill" / "job42" / "onesided.nc").read_text() == "G1 X1\n"
+    assert out["via"] == "direct-write"
+    assert moonraker.available()
+
+
+def test_upload_nothing_configured(monkeypatch):
+    monkeypatch.setenv("GCODE_DIR", "/nonexistent")
+    monkeypatch.delenv("MOONRAKER_URL", raising=False)
+    assert not moonraker.available()
+    with pytest.raises(RuntimeError):
+        moonraker.upload(Path("whatever.nc"))
 
 
 # ---------- excellon ----------
@@ -140,3 +163,15 @@ def test_http_job_flow():
     assert cfg["tools"]["isolation"]["feed_rate"] == 240
     r = client.get(f"/jobs/{name}")
     assert r.status_code == 200 and "toolpaths" in r.text
+
+
+def test_processing_page():
+    """A converting job renders the processing screen with elapsed time."""
+    job = Path(os.environ["PCB_MILL_JOBS"]) / "fakejob-processing"
+    job.mkdir()
+    (job / "status.json").write_text(json.dumps({
+        "state": "converting", "created": time.strftime("%F %T"), "files": []}))
+    client = TestClient(webapp.app)
+    r = client.get(f"/jobs/{job.name}")
+    assert r.status_code == 200
+    assert "spinner" in r.text and "Converting" in r.text and "elapsed" in r.text

@@ -11,3 +11,8 @@ table { border-collapse: collapse; }
 th, td { border: 1px solid #ccc; padding: .25rem .7rem; text-align: left; }
 pre { background: #f5f5f5; padding: .8rem; overflow-x: auto; font-size: .82rem; }
 img.preview { max-width: 100%; border: 1px solid #ccc; }
+.processing { display: flex; align-items: center; gap: 1rem; border: 1px solid #ccc;
+  border-radius: 6px; padding: 1rem; margin: 1rem 0; background: #fafaff; }
+.spinner { width: 34px; height: 34px; flex: none; border: 4px solid #d0d0e8;
+  border-top-color: #446; border-radius: 50%; animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
