@@ -1,0 +1,20 @@
+--- a/gerber_to_gcode.py
++++ b/gerber_to_gcode.py
+@@ -313,8 +313,15 @@
+         binary = np.pad(binary, pad_size, mode='constant', constant_values=False)
+ 
+         binary = morphology.closing(binary, morphology.disk(1))
+-        binary = morphology.remove_small_objects(binary, max_size=10)
+-        binary = morphology.remove_small_holes(binary, max_size=10)
++        # skimage >=0.25 renamed the size args (min_size->max_size,
++        # area_threshold->max_size). Fall back for older skimage, e.g.
++        # Debian bookworm's 0.19.3 (what the Pi 3B can install).
++        try:
++            binary = morphology.remove_small_objects(binary, max_size=10)
++            binary = morphology.remove_small_holes(binary, max_size=10)
++        except TypeError:
++            binary = morphology.remove_small_objects(binary, min_size=10)
++            binary = morphology.remove_small_holes(binary, area_threshold=10)
+ 
+         contours = measure.find_contours(binary.astype(float), 0.5)
+         contours = [contour - pad_size for contour in contours]

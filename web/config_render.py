@@ -8,6 +8,7 @@ complete config that `mill.py --config` accepts unchanged.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
@@ -60,7 +61,10 @@ def render_config(overrides: dict | None = None,
     tools = {t["id"]: t for t in inv.get("tools", [])}
 
     cfg["general"]["safe_height"] = inv["machine"]["safe_height"]
-    cfg["general"]["dpi"] = inv["machine"]["dpi"]
+    # PCB_MILL_DPI env override: the Pi 3B deployment renders at 1000 dpi —
+    # 1500-dpi bitmaps of a board this size OOM its 869MB RAM (2026-10-18
+    # freeze). 1000dpi = 25.4um/px, ample for 0.8mm tooling.
+    cfg["general"]["dpi"] = int(os.environ.get("PCB_MILL_DPI") or inv["machine"]["dpi"])
 
     for op, section in OP_SECTION.items():
         sections = [section] + ([MIRROR_OPS[op]] if op in MIRROR_OPS else [])

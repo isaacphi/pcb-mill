@@ -1,0 +1,27 @@
+[Unit]
+Description=pcb-mill web UI (Gerber -> G-code -> Moonraker)
+After=network-online.target moonraker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=site3
+WorkingDirectory=/home/site3/pcb-mill
+Environment=MOONRAKER_URL=http://127.0.0.1:7125
+# 1500-dpi bitmaps OOM the Pi 3B's 869MB RAM; 1000dpi = 25.4um/px is ample
+# for 0.8mm tooling (vendor default is 1000).
+Environment=PCB_MILL_DPI=1000
+ExecStart=/home/site3/pcb-mill/.venv/bin/python -m uvicorn web.app:app --host 0.0.0.0 --port 8081
+Restart=on-failure
+RestartSec=5
+
+# Coexistence with OctoPrint (learned 2026-10-18: an uncapped conversion
+# swap-thrashed the whole Pi and stalled a print mid-job). Lowest CPU + IO
+# priority, and a hard cgroup memory cap: a runaway conversion gets
+# OOM-killed inside this cgroup only; the print can no longer freeze the box.
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=450M
+
+[Install]
+WantedBy=multi-user.target

@@ -313,8 +313,15 @@ class GerberToGcode:
         binary = np.pad(binary, pad_size, mode='constant', constant_values=False)
 
         binary = morphology.closing(binary, morphology.disk(1))
-        binary = morphology.remove_small_objects(binary, max_size=10)
-        binary = morphology.remove_small_holes(binary, max_size=10)
+        # skimage >=0.25 renamed the size args (min_size->max_size,
+        # area_threshold->max_size). Fall back for older skimage, e.g.
+        # Debian bookworm's 0.19.3 (what the Pi 3B can install).
+        try:
+            binary = morphology.remove_small_objects(binary, max_size=10)
+            binary = morphology.remove_small_holes(binary, max_size=10)
+        except TypeError:
+            binary = morphology.remove_small_objects(binary, min_size=10)
+            binary = morphology.remove_small_holes(binary, area_threshold=10)
 
         contours = measure.find_contours(binary.astype(float), 0.5)
         contours = [contour - pad_size for contour in contours]
@@ -864,7 +871,12 @@ class GerberToGcode:
         pad = disk_r + 5
         binary = np.pad(binary, pad, mode='constant', constant_values=False)
         binary = ndimage.binary_fill_holes(binary)
-        binary = morphology.dilation(binary, morphology.disk(disk_r))
+        # EDT threshold == euclidean-disk dilation but O(n) (same trick as the
+        # isolation tool-radius offset above). skimage <0.25 routes bool images
+        # through the slow greyscale path here (scipy grey_dilation with a
+        # 2*disk_r+1 footprint); on the Pi 3B (Debian's skimage 0.19.3) that
+        # takes tens of minutes for a board-size bitmap instead of seconds.
+        binary = ndimage.distance_transform_edt(~binary) <= disk_r
 
         contours = measure.find_contours(binary.astype(float), 0.5)
 

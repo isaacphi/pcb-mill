@@ -153,6 +153,44 @@ wire the spindle relay and probe clips (Part 3), then verify endstops/probe and 
 the PCB_MESH flow (Part 5). The gerber→G-code conversion moves to the web UI —
 see `gerber-web-ui-design.md` — so `convert.sh`/Samba (Part 4) is superseded.
 
+## Step 5 — pcb-mill web app (port 8081)
+
+Installed 2026-10-18. Lessons baked in from the first attempt (an uncapped
+1500-dpi conversion swap-thrashed the Pi, froze it off the network for
+~7 min, and stalled an OctoPrint job mid-print):
+
+**Python deps** — Python is 3.11 and piwheels has NO scikit-image wheel for
+cp311/armv7 (pip tries to build from source — hours). Use Debian's packages
+for the scientific stack and a `--system-site-packages` venv for the rest.
+Do NOT pip-install numpy 2.x into the venv — it shadows apt's numpy 1.24 and
+breaks skimage's ABI.
+
+```bash
+sudo apt-get install -y python3-skimage python3-scipy python3-numpy \
+                        python3-matplotlib python3-pil
+rsync -az --exclude .git --exclude .venv --exclude __pycache__ \
+  --exclude web_jobs --exclude out --exclude board \
+  ./ site3@anycubic-octopi.local:pcb-mill/
+ssh site3@anycubic-octopi.local
+cd ~/pcb-mill && python3 -m venv --system-site-packages .venv
+.venv/bin/pip install fastapi uvicorn httpx jinja2 python-multipart pyyaml pygerber
+# note: plain uvicorn, NOT uvicorn[standard] (uvloop won't build on armv7)
+```
+
+**Service** — `deploy/pcb-mill.service` → `/etc/systemd/system/`, then
+`sudo systemctl enable --now pcb-mill`. The unit carries the coexistence
+guardrails: `Nice=19`, `IOSchedulingClass=idle`, **`MemoryMax=450M`** (a
+runaway conversion is OOM-killed inside its own cgroup; the rest of the
+system, including an OctoPrint print, is unaffected), and
+`PCB_MILL_DPI=1000` — 1500-dpi bitmaps of a ~50x66mm board need ~500MB+ of
+RAM (RGBA render + float64 EDT transforms); 1000 dpi ≈ 25.4µm/px is ample
+for 0.8 mm tooling. Manual starts: `deploy/pi-start.sh` applies the same
+guards via `nice`/`prlimit`/env.
+
+App runs at `http://anycubic-octopi.local:8081/` and talks to the local
+Moonraker (`MOONRAKER_URL=http://127.0.0.1:7125`). Conversion of the AQI
+test board (1000 dpi) is expected ~5–15 min on the 3B.
+
 ## Rollback
 
 Klipper stack removal is clean and doesn't affect OctoPrint:

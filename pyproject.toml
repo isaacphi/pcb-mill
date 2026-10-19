@@ -29,3 +29,6 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+# test_hardware.py / monitor_probe.py are interactive bench tools (live machine,
+# stdin prompts), not unit tests — only collect the real suite.
+testpaths = ["tests"]

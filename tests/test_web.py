@@ -73,6 +73,15 @@ def test_render_overrides_mirror_to_back_isolation():
     assert isinstance(cfg["tools"]["isolation"]["feed_rate"], int)
 
 
+def test_dpi_env_override(monkeypatch):
+    monkeypatch.delenv("PCB_MILL_DPI", raising=False)
+    cfg = config_render.render_config()
+    assert cfg["general"]["dpi"] == 1500  # tools.yaml default
+    monkeypatch.setenv("PCB_MILL_DPI", "1000")
+    cfg = config_render.render_config()
+    assert cfg["general"]["dpi"] == 1000  # Pi deployment override
+
+
 # ---------- end-to-end conversion ----------
 
 SAMPLE = dict(
