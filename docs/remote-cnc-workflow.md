@@ -902,6 +902,25 @@ channel numbers — trust measurements, not labels):**
 - User previously toggled spindle by hand; hotend breakout was only plugged
   in because stock firmware expected it.
 
+**Probe commissioning (2026-10-20 evening):**
+- First real `PROBE` with Z motion: PASSED. Samples at (28,32) in a
+  re-labeled frame: 4.550 / 4.5675 / 4.570 → median **4.5675**, spread
+  0.02mm (config: speed 2mm/s, samples 3 median, retract 1.0, tolerance
+  0.02). Second verification probe at (29,33): **z=-0.205** both samples
+  (identical). Electrical path bit→clips→port5 works through copper board.
+- Manual-approach datum trick: Z is fake-homed at 25 (= power-on pos +20mm
+  via FORCE_MOVE). When position_min blocks descent before the bit reaches
+  the board, `SET_KINEMATIC_POSITION Z=<n>` re-labels to buy travel; the
+  real Z=0 comes from the probe, never from the fake home.
+- Incident: `PCB_MESH` ran with the macro's default full-bed region
+  (5,5-105,105) over a ~20×20mm board → probed over bare spoilboard, no
+  trigger possible, bit driven to position_min and broken. Klipper ignores
+  positional/unnamed macro args SILENTLY — always pass `X0= Y0= X1= Y1=`.
+  Fixes (commit 9cb6e4c): macro now REFUSES to run without all four named
+  region params, datum-probes at the region center, and `idle_timeout` no
+  longer runs M84 (Klipper v0.12+ clears homed state on stepper disable —
+  this kept breaking interactive sessions mid-setup).
+
 ## Next Steps
 
 1. [x] Flash Klipper to Snapmaker board
@@ -910,9 +929,10 @@ channel numbers — trust measurements, not labels):**
 4. [x] Verify endstop switches (QUERY_ENDSTOPS while pressing each lever)
 5. [x] Test basic motion (FORCE_MOVE jogs + G28; M3/M5 toggle verified by meter)
 6. [x] Wire probe clips to door-switch module (port 5); verify with QUERY_PROBE — open↔TRIGGERED on clip contact
-7. [ ] Run PCB_MESH on scrap clad board; check bit kisses surface at Z0 across the area
-8. [ ] Run test G-code file
-9. [ ] Set up Samba share (optional)
-10. [ ] Add auto-conversion (optional — superseded by web/ app, see gerber-web-ui-design.md)
+7. [x] First real PROBE with Z movement — bit kisses copper, stops, retracts (numbers in Commissioning Log)
+8. [ ] Run PCB_MESH on scrap clad board (named region params, fully inside copper); check bit kisses surface at Z0 across the area
+9. [ ] Run test G-code file
+10. [ ] Set up Samba share (optional)
+11. [ ] Add auto-conversion (optional — superseded by web/ app, see gerber-web-ui-design.md)
 
 Questions or issues? Check Klipper Discord or UlinProject repo.
