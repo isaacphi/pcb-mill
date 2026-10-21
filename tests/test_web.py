@@ -175,3 +175,61 @@ def test_processing_page():
     r = client.get(f"/jobs/{job.name}")
     assert r.status_code == 200
     assert "spinner" in r.text and "Converting" in r.text and "elapsed" in r.text
+
+
+# ---------- probe geometry ----------
+
+from web import probe  # noqa: E402
+
+
+def test_extents_from_gcode(tmp_path):
+    nc = tmp_path / "edge.nc"
+    nc.write_text(
+        "G21\nG90\nM3 S20000\n"
+        "G0 X0.4148 Y0.0000 Z1.0\n"
+        "G1 Z-0.4 F45\n"
+        "G1 X70.3664 Y0.0000 F220\n"
+        "G1 X70.7813 Y100.3385 F220\n"
+        "G1 X0.0000 Y100.7533 F220\n"
+        "M5\n")
+    ext = probe.extents_from_gcode([nc])
+    assert ext == (0.0, 0.0, 70.7813, 100.7533)
+
+
+def test_extents_ignores_non_moves(tmp_path):
+    nc = tmp_path / "x.nc"
+    nc.write_text("G21\n; X999 Y999 comment\nM3 S20000\nG4 P2\nG1 X5 Y5 F100\n")
+    assert probe.extents_from_gcode([nc]) == (5.0, 5.0, 5.0, 5.0)
+
+
+def test_mesh_params_spacing_and_margin():
+    # 70x100 board: ~8 x ~11 points at 10mm spacing, shrunk by the margin
+    x0, y0, x1, y1, nx, ny = probe.mesh_params((0.0, 0.0, 70.0, 100.0))
+    assert (x0, y0, x1, y1) == (1.5, 1.5, 68.5, 98.5)
+    assert nx == 8 and ny == 11
+
+
+def test_mesh_params_clamps_tiny_board():
+    x0, y0, x1, y1, nx, ny = probe.mesh_params((0.0, 0.0, 12.0, 8.0))
+    assert nx == 2 and ny == 2
+    assert (x0, y0, x1, y1) == (1.5, 1.5, 10.5, 6.5)
+
+
+def test_mesh_params_rejects_sliver():
+    with pytest.raises(ValueError):
+        probe.mesh_params((0.0, 0.0, 2.0, 100.0))
+
+
+def test_job_page_shows_probe_section(tmp_path, monkeypatch):
+    """A done job with extents renders the probe/origin setup block."""
+    monkeypatch.setenv("GCODE_DIR", str(tmp_path))  # simulate running on the Pi
+    monkeypatch.delenv("MOONRAKER_URL", raising=False)
+    job = Path(os.environ["PCB_MILL_JOBS"]) / "fakejob-probe"
+    job.mkdir()
+    (job / "status.json").write_text(json.dumps({
+        "state": "done", "files": ["onesided.nc"],
+        "extents": [0.0, 0.0, 70.0, 100.0], "board": {"w": 70.0, "h": 100.0}}))
+    client = TestClient(webapp.app)
+    r = client.get(f"/jobs/{job.name}")
+    assert r.status_code == 200
+    assert "Probe &amp; origin" in r.text and "70.0 × 100.0" in r.text

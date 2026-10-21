@@ -1,10 +1,12 @@
-"""pcb-mill web UI (v1): upload Gerbers -> run mill.py -> preview -> download/push.
+"""pcb-mill web UI: upload Gerbers -> run mill.py -> preview -> probe -> mill.
 
 Run locally:   uv run uvicorn web.app:app --port 8090
 On the Pi:     MOONRAKER_URL=http://127.0.0.1:7125 uv run uvicorn web.app:app --host 0.0.0.0 --port 8090
 
-Machine control (jog/probe/mesh/pause/estop) stays in Fluidd — this app only
-does the conversion layer. See docs/gerber-web-ui-design.md.
+Beyond conversion, the job page drives the board-probing step: set the
+origin (G92) where the bit sits, then run PCB_MESH over exactly the board's
+extents (from the generated G-code) at ~10mm spacing. Jogging/estop stays
+in Fluidd. See docs/gerber-web-ui-design.md.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import config_render, excellon, moonraker
+from . import config_render, excellon, moonraker, probe
 
 ROOT = Path(__file__).resolve().parent.parent
 JOBS = Path(__import__("os").environ.get("PCB_MILL_JOBS", ROOT / "web_jobs"))
@@ -88,7 +90,11 @@ async def _convert(job: Path, copper: str, side: str, edge: str, drill: str, con
             _set_status(job, state="error", error="plot_toolpaths.py failed — see log")
             return
     files = sorted(p.name for p in out.glob("*.nc"))
-    _set_status(job, state="done", files=files,
+    ext = probe.extents_from_gcode(list(out.glob("*.nc")))
+    board = None
+    if ext:
+        board = {"w": round(ext[2] - ext[0], 2), "h": round(ext[3] - ext[1], 2)}
+    _set_status(job, state="done", files=files, extents=ext, board=board,
                 toolpaths="out/toolpaths.png" if (out / "toolpaths.png").exists() else None)
 
 
@@ -165,7 +171,8 @@ async def job_page(request: Request, name: str):
             pass
     return templates.TemplateResponse(request=request, name="job.html", context={
         "name": name, "st": st, "log": log, "elapsed": elapsed,
-        "moonraker": moonraker.available(), "fluidd": moonraker.fluidd()})
+        "moonraker": moonraker.available(), "moonraker_control": moonraker.control_available(),
+        "fluidd": moonraker.fluidd()})
 
 
 @app.get("/jobs/{name}/files/{path:path}")
@@ -174,6 +181,64 @@ async def job_file(name: str, path: str):
     if not f.is_file() or JOBS.resolve() not in f.parents:
         raise HTTPException(404)
     return FileResponse(f, filename=f.name)
+
+
+@app.post("/jobs/{name}/origin")
+async def set_origin(name: str):
+    """Record the bit's current XY as the board corner (job 0,0) via G92."""
+    job = JOBS / name
+    st = _status(job)
+    if st.get("state") != "done":
+        raise HTTPException(409, "job not finished")
+    x, y = moonraker.toolhead_xy()
+    moonraker.gcode("G92 X0 Y0")
+    _set_status(job, origin={"x": round(x, 2), "y": round(y, 2)})
+    return RedirectResponse(f"/jobs/{name}", status_code=303)
+
+
+async def _watch_probe(job: Path, x0: float, y0: float, nx: int, ny: int):
+    """Poll bed_mesh until the calibration for our region lands (or fails)."""
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        await asyncio.sleep(3)
+        try:
+            if moonraker.printer_state() in ("error", "shutdown"):
+                _set_status(job, probe={"state": "error",
+                                        "error": "Klipper error during probing — check machine (clips attached? on copper?)"})
+                return
+            m = moonraker.bed_mesh()
+        except Exception:
+            continue
+        mat = m.get("probed_matrix") or []
+        if len(mat) == ny and mat and len(mat[0]) == nx:
+            mm = m.get("mesh_min") or [None, None]
+            if mm[0] is not None and abs(mm[0] - x0) < 0.5 and abs(mm[1] - y0) < 0.5:
+                zs = [z for row in mat for z in row]
+                _set_status(job, probe={
+                    "state": "done", "points": [nx, ny],
+                    "min": round(min(zs), 3), "max": round(max(zs), 3),
+                    "spread": round(max(zs) - min(zs), 3)})
+                return
+    _set_status(job, probe={"state": "error", "error": "timed out waiting for mesh"})
+
+
+@app.post("/jobs/{name}/probe")
+async def probe_board(name: str):
+    """Run PCB_MESH over exactly this board's extents (~10mm spacing)."""
+    job = JOBS / name
+    st = _status(job)
+    if st.get("state") != "done":
+        raise HTTPException(409, "job not finished")
+    if not st.get("origin"):
+        raise HTTPException(409, "set the board origin first")
+    if not st.get("extents"):
+        raise HTTPException(409, "no board extents — conversion incomplete")
+    x0, y0, x1, y1, nx, ny = probe.mesh_params(tuple(st["extents"]))
+    moonraker.gcode(f"PCB_MESH X0={x0:.2f} Y0={y0:.2f} X1={x1:.2f} Y1={y1:.2f} PTSX={nx} PTSY={ny}")
+    _set_status(job, probe={"state": "running", "points": [nx, ny],
+                            "region": [round(x0, 1), round(y0, 1), round(x1, 1), round(y1, 1)]})
+    asyncio.create_task(_watch_probe(job, x0, y0, nx, ny))
+    return RedirectResponse(f"/jobs/{name}", status_code=303)
 
 
 @app.post("/jobs/{name}/send")

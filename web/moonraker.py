@@ -36,6 +36,60 @@ def available() -> bool:
     return gcode_dir() is not None or url() is not None
 
 
+def _api() -> str | None:
+    """Moonraker HTTP base for control calls (gcode/query).
+
+    On the Pi, Moonraker is local even when MOONRAKER_URL is unset (the
+    upload path goes through the gcodes dir, but control needs HTTP).
+    """
+    u = url()
+    if u:
+        return u
+    if gcode_dir() is not None:
+        return "http://127.0.0.1:7125"
+    return None
+
+
+def control_available() -> bool:
+    return _api() is not None
+
+
+def gcode(script: str) -> dict:
+    base = _api()
+    if not base:
+        raise RuntimeError("Moonraker control not available")
+    r = httpx.post(f"{base}/printer/gcode/script", data={"script": script}, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
+def query(objects: str) -> dict:
+    base = _api()
+    if not base:
+        raise RuntimeError("Moonraker control not available")
+    r = httpx.get(f"{base}/printer/objects/query?{objects}", timeout=15)
+    r.raise_for_status()
+    return r.json()["result"]["status"]
+
+
+def toolhead_xy() -> tuple[float, float]:
+    p = query("toolhead")["toolhead"]["position"]
+    return float(p[0]), float(p[1])
+
+
+def bed_mesh() -> dict:
+    return query("bed_mesh")["bed_mesh"]
+
+
+def printer_state() -> str:
+    base = _api()
+    if not base:
+        raise RuntimeError("Moonraker control not available")
+    r = httpx.get(f"{base}/printer/info", timeout=15)
+    r.raise_for_status()
+    return r.json()["result"]["state"]
+
+
 def fluidd() -> str:
     return os.environ.get("FLUIDD_URL", "http://anycubic-octopi.local:8080").rstrip("/")
 
