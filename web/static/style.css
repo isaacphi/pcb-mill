@@ -5,8 +5,24 @@ h1 { font-size: 1.5rem; }
 .ok { color: #070; font-weight: 600; }
 fieldset { margin: 1rem 0; border: 1px solid #ccc; border-radius: 6px; }
 label { display: inline-block; margin: .3rem 1rem .3rem 0; }
-input[type=file] { max-width: 260px; }
-button { font-size: 1rem; padding: .5rem 1.2rem; }
+input[type=file] { max-width: 300px; }
+button { font-size: 1rem; padding: .5rem 1.2rem; background: #446; color: #fff;
+  border: 0; border-radius: 6px; cursor: pointer; }
+button:hover { background: #334; }
+button.secondary { background: #888; }
+form.inline { display: inline; }
+details { margin: 1rem 0; }
+summary { cursor: pointer; font-weight: 600; }
+details.log summary { font-weight: normal; color: #777; }
+ol.steps { list-style: none; display: flex; gap: .4rem; padding: 0; margin: 1rem 0;
+  flex-wrap: wrap; }
+ol.steps li { padding: .3rem .8rem; border-radius: 999px; background: #eee;
+  color: #999; font-size: .85rem; }
+ol.steps li.done { background: #dff0d8; color: #2c662d; }
+ol.steps li.done::before { content: "✓ "; }
+ol.steps li.current { background: #446; color: #fff; }
+ol.setup { margin: .5rem 0; }
+ol.setup li { margin: .25rem 0; }
 table { border-collapse: collapse; }
 th, td { border: 1px solid #ccc; padding: .25rem .7rem; text-align: left; }
 pre { background: #f5f5f5; padding: .8rem; overflow-x: auto; font-size: .82rem; }

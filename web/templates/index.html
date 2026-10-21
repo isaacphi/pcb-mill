@@ -6,43 +6,50 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<h1>pcb-mill <span class="dim">— gerber → g-code</span></h1>
-<p class="dim">Machine control (jog, probe, bed mesh, run) stays in
-  <a href="{{ fluidd }}" target="_blank">Fluidd</a>.
-  {% if moonraker %}Push to machine: <b>enabled</b>.{% else %}Push to machine:
-  disabled (no gcodes dir or MOONRAKER_URL) — files are download-only.{% endif %}</p>
+<h1>pcb-mill</h1>
+<p class="dim">Gerber → G-code, then surface-meshed milling. The job page walks you through
+  origin + probe; milling runs in <a href="{{ fluidd }}" target="_blank">Fluidd</a>.
+  {% if not moonraker %}<br>Push to machine: <b>disabled</b> (no gcodes dir / MOONRAKER_URL) — files are download-only.{% endif %}</p>
 
 <form method="post" action="/jobs" enctype="multipart/form-data">
 <fieldset>
-  <legend>Files</legend>
-  <label>Copper gerber <input type="file" name="copper" required></label>
-  <label>Side <select name="side">
-    <option value="bottom" selected>bottom (output mirrored)</option>
-    <option value="top">top</option>
-  </select></label>
-  <label>Edge cuts <input type="file" name="edge" required></label>
-  <label>Drill (PTH) <input type="file" name="drill" required></label>
-  <label>Drill (NPTH, optional — merged) <input type="file" name="drill2"></label>
+  <legend>Board files</legend>
+  <label>Copper layer <span class="dim">(F_Cu / B_Cu .gbr)</span><br>
+    <input type="file" name="copper" required></label>
+  <label>Board outline <span class="dim">(Edge_Cuts .gbr)</span><br>
+    <input type="file" name="edge" required></label>
+  <label>Drills — plated <span class="dim">(.drl)</span><br>
+    <input type="file" name="drill" required></label>
+  <label>Drills — non-plated <span class="dim">(.drl, optional, merged)</span><br>
+    <input type="file" name="drill2"></label>
+  <label>Copper side<br>
+    <select name="side">
+      <option value="bottom" selected>bottom (output mirrored)</option>
+      <option value="top">top</option>
+    </select></label>
 </fieldset>
 
-{% for op in ["isolation", "drill", "edge"] %}
-<fieldset>
-  <legend>{{ op }}</legend>
-  <label>Tool <select name="tool.{{ op }}">
-    {% for t in inv.tools %}
-    <option value="{{ t.id }}" {% if op in t.default_for %}selected{% endif %}>
-      {{ t.name }}</option>
+<details>
+  <summary>Cutting parameters <span class="dim">— defaults are tuned; isolation depth 0.07&nbsp;mm relies on the per-job surface mesh</span></summary>
+  {% for op in ["isolation", "drill", "edge"] %}
+  <fieldset>
+    <legend>{{ op }}</legend>
+    <label>Tool <select name="tool.{{ op }}">
+      {% for t in inv.tools %}
+      <option value="{{ t.id }}" {% if op in t.default_for %}selected{% endif %}>
+        {{ t.name }}</option>
+      {% endfor %}
+    </select></label>
+    {% for key, val in inv.operations[op].items() %}
+      {% if key != "tool" %}
+    <label>{{ key }} <input name="{{ op }}.{{ key }}" value="{{ val }}" size="7"></label>
+      {% endif %}
     {% endfor %}
-  </select></label>
-  {% for key, val in inv.operations[op].items() %}
-    {% if key != "tool" %}
-  <label>{{ key }} <input name="{{ op }}.{{ key }}" value="{{ val }}" size="7"></label>
-    {% endif %}
+  </fieldset>
   {% endfor %}
-</fieldset>
-{% endfor %}
+</details>
 
-<button type="submit">Convert</button>
+<button type="submit">Convert →</button>
 </form>
 </body>
 </html>

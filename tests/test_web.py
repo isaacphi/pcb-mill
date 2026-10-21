@@ -233,3 +233,28 @@ def test_job_page_shows_probe_section(tmp_path, monkeypatch):
     r = client.get(f"/jobs/{job.name}")
     assert r.status_code == 200
     assert "Probe &amp; origin" in r.text and "70.0 × 100.0" in r.text
+
+
+def test_fragment_route_renders(tmp_path, monkeypatch):
+    """The htmx poll target returns the dynamic body partial."""
+    monkeypatch.setenv("GCODE_DIR", str(tmp_path))
+    monkeypatch.delenv("MOONRAKER_URL", raising=False)
+    job = Path(os.environ["PCB_MILL_JOBS"]) / "fakejob-frag"
+    job.mkdir()
+    (job / "status.json").write_text(json.dumps({
+        "state": "done", "files": ["onesided.nc"],
+        "extents": [0.0, 0.0, 70.0, 100.0], "board": {"w": 70.0, "h": 100.0}}))
+    client = TestClient(webapp.app)
+    r = client.get(f"/jobs/{job.name}/fragment")
+    assert r.status_code == 200
+    assert "Probe &amp; origin" in r.text
+    assert "steps" in r.text  # workflow step list rendered
+    assert "<html>" not in r.text  # partial, not a full page
+
+
+def test_index_has_collapsed_advanced():
+    client = TestClient(webapp.app)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "<details>" in r.text and "Cutting parameters" in r.text
+    assert "0.07" in r.text  # shallow mesh-based isolation depth shown

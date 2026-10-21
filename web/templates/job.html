@@ -4,90 +4,13 @@
   <meta charset="utf-8">
   <title>pcb-mill — {{ name }}</title>
   <link rel="stylesheet" href="/static/style.css">
-  {% if st.state in ["queued", "converting"] or (st.probe and st.probe.state == "running") %}<meta http-equiv="refresh" content="3">{% endif %}
+  <script src="/static/htmx.min.js"></script>
 </head>
 <body>
 <h1>Job {{ name }} <span class="dim">— {{ st.state }}{% if st.side %}, {{ st.side }} copper{% endif %}</span></h1>
 <p><a href="/">← new job</a></p>
-
-{% if st.error %}<p class="err">{{ st.error }}</p>{% endif %}
-
-{% if st.state in ["queued", "converting"] %}
-<div class="processing">
-  <div class="spinner"></div>
-  <div>
-    <p><b>Converting…</b>{% if elapsed is not none %} {{ elapsed // 60 }}:{{ "%02d"|format(elapsed % 60) }} elapsed{% endif %}</p>
-    <p class="dim">Parsing drills → rendering gerbers → tracing contours → writing G-code.
-    This takes a couple of minutes on a fast machine, ~5–15 min on the Pi — the page
-    refreshes itself.</p>
-  </div>
+<div id="job-body" hx-get="/jobs/{{ name }}/fragment" hx-trigger="every 3s" hx-swap="innerHTML">
+  {% include "_job_body.html" %}
 </div>
-{% endif %}
-
-{% if st.report %}
-<h2>Holes (vs {{ inv_note | default("drill bit") }})</h2>
-<table>
-  <tr><th>diameter</th><th>count</th><th>machining</th></tr>
-  {% for r in st.report %}
-  <tr><td>{{ "%.2f"|format(r.diameter) }} mm</td><td>{{ r.count }}</td><td>{{ r.method }}</td></tr>
-  {% endfor %}
-</table>
-{% endif %}
-
-{% if st.state == "done" %}
-  {% if st.toolpaths %}
-<h2>Toolpaths</h2>
-<img class="preview" src="/jobs/{{ name }}/files/{{ st.toolpaths }}" alt="toolpaths">
-  {% endif %}
-<h2>Files</h2>
-<ul>
-  {% for f in st.files %}
-  <li><a href="/jobs/{{ name }}/files/out/{{ f }}">{{ f }}</a></li>
-  {% endfor %}
-</ul>
-  {% if st.sent %}<p class="ok">Sent to machine: {{ st.sent|join(", ") }} — in Fluidd under
-    <b>pcb-mill/{{ name }}</b>. <a href="{{ fluidd }}" target="_blank">Open Fluidd</a> to run them.</p>
-  {% elif moonraker %}
-<form method="post" action="/jobs/{{ name }}/send"><button>Send to machine</button></form>
-  {% else %}
-<p class="dim">Download the .nc files and upload them in Fluidd.</p>
-  {% endif %}
-{% endif %}
-
-{% if st.state == "done" and moonraker_control %}
-<h2>Probe &amp; origin</h2>
-{% if st.board %}<p>Board: <b>{{ st.board.w }} × {{ st.board.h }} mm</b> (probe points ~10mm apart)</p>{% endif %}
-{% if not st.origin %}
-<ol>
-  <li>Clamp the board, install the milling bit, spindle OFF</li>
-  <li>Clip the probe leads to the bit shank and the copper</li>
-  <li>In <a href="{{ fluidd }}" target="_blank">Fluidd</a>: home (<code>G28</code>), then jog the bit to the board's bottom-left corner, a few mm above the surface</li>
-</ol>
-<form method="post" action="/jobs/{{ name }}/origin"><button>Set board origin at bit position</button></form>
-{% elif st.probe and st.probe.state == "running" %}
-<div class="processing">
-  <div class="spinner"></div>
-  <div>
-    <p><b>Probing…</b> {{ st.probe.points[0] }}×{{ st.probe.points[1] }} points, region {{ st.probe.region|join(', ') }}.</p>
-    <p class="dim">Watch the machine — the bit must stop the instant it touches copper. Hand near the power switch.</p>
-  </div>
-</div>
-{% elif st.probe and st.probe.state == "done" %}
-<p class="ok">Mesh done ({{ st.probe.points[0] }}×{{ st.probe.points[1] }} pts): surface {{ st.probe.min }}…{{ st.probe.max }} mm, spread {{ st.probe.spread }} mm. <b>Remove the probe clips before milling!</b></p>
-<form method="post" action="/jobs/{{ name }}/probe"><button>Re-probe</button></form>
-{% elif st.probe and st.probe.state == "error" %}
-<p class="err">Probe failed: {{ st.probe.error }}</p>
-<form method="post" action="/jobs/{{ name }}/probe"><button>Retry probe</button></form>
-{% else %}
-<p>Origin set (bit was at machine {{ st.origin.x }}, {{ st.origin.y }}). Ready to mesh the board area.</p>
-<form method="post" action="/jobs/{{ name }}/probe"><button>Probe board</button></form>
-<form method="post" action="/jobs/{{ name }}/origin"><button>Re-set origin</button></form>
-{% endif %}
-{% endif %}
-
-{% if log %}
-<h2>Log</h2>
-<pre>{{ log }}</pre>
-{% endif %}
 </body>
 </html>

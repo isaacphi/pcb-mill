@@ -28,6 +28,18 @@ tool inventory and per-operation parameter model are N-tool from day one —
 extending to more bits is data + UI, not a redesign. Machine control
 (jog/probe/mesh/pause/estop) stays in Fluidd in v1 and beyond — see below.
 
+> **Update 2026-10-21 — probing moved into the app.** Implemented and tested:
+> the job page now walks Convert → Set origin → Probe mesh → Send → Mill.
+> Conversion records the board extents (scanned from the generated .nc
+> files, which mill.py zero-bases at the board corner); "Set origin" issues
+> `G92 X0 Y0` at the bit's position; "Probe board" runs `PCB_MESH` over
+> exactly those extents with ~10 mm point spacing (single touch per point —
+> measured repeatability ~0.01–0.02 mm). The page polls via htmx
+> (`/jobs/{name}/fragment`, vendored `htmx.min.js`, no build step, no CDN).
+> Jogging, estop and running the job still live in Fluidd. Because every
+> job is surface-meshed, default isolation `cut_depth` dropped 0.2 →
+> **0.07 mm** (2× the 35 µm copper; residual mesh error ~±0.03 mm).
+
 ## 2. Architecture — hybrid, NOT 100% custom
 
 **Decision (revised after review): build only the conversion/job layer;

@@ -902,6 +902,13 @@ channel numbers — trust measurements, not labels):**
 - User previously toggled spindle by hand; hotend breakout was only plugged
   in because stock firmware expected it.
 
+**Cut-depth decision (2026-10-21):** isolation `cut_depth` default dropped
+0.2 → **0.07mm** (2× the 35µm copper) now that every job is surface-meshed.
+Residual error budget: probe repeatability ~0.01-0.02mm + bicubic
+interpolation error at 10mm spacing ~0.01-0.02mm ≈ ±0.03mm → 0.07mm still
+cuts 0.035mm+ into FR-4 worst case. Shallower = less bit stress (already
+broke one bit), less vibration, cleaner isolation.
+
 **Probe commissioning (2026-10-20 evening):**
 - First real `PROBE` with Z motion: PASSED. Samples at (28,32) in a
   re-labeled frame: 4.550 / 4.5675 / 4.570 → median **4.5675**, spread
@@ -930,7 +937,7 @@ channel numbers — trust measurements, not labels):**
 5. [x] Test basic motion (FORCE_MOVE jogs + G28; M3/M5 toggle verified by meter)
 6. [x] Wire probe clips to door-switch module (port 5); verify with QUERY_PROBE — open↔TRIGGERED on clip contact
 7. [x] First real PROBE with Z movement — bit kisses copper, stops, retracts (numbers in Commissioning Log)
-8. [ ] Run PCB_MESH on scrap clad board (named region params, fully inside copper); check bit kisses surface at Z0 across the area
+8. [x] Run PCB_MESH on scrap clad board (named region params, fully inside copper) — 5×5 over 15×15mm: smooth 0.105mm tilt, no noise (2026-10-20). Now driven from the web job page (region = board extents, ~10mm spacing, single touch).
 9. [ ] Run test G-code file
 10. [ ] Set up Samba share (optional)
 11. [ ] Add auto-conversion (optional — superseded by web/ app, see gerber-web-ui-design.md)

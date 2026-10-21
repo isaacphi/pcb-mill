@@ -22,7 +22,7 @@ operations:
     tool: em08
     feed_rate: 250
     plunge_rate: 80
-    cut_depth: 0.2
+    cut_depth: 0.07 # shallow - relies on per-job surface mesh (PCB_MESH)
     passes: 1
     step_over: 0.4
     isolation_border: 0

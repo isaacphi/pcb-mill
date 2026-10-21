@@ -156,8 +156,7 @@ async def create_job(
     return RedirectResponse(f"/jobs/{job.name}", status_code=303)
 
 
-@app.get("/jobs/{name}", response_class=HTMLResponse)
-async def job_page(request: Request, name: str):
+def _job_context(request: Request, name: str) -> dict:
     job = JOBS / name
     if not job.is_dir():
         raise HTTPException(404)
@@ -169,10 +168,20 @@ async def job_page(request: Request, name: str):
             elapsed = int(time.time() - time.mktime(time.strptime(st["created"], "%Y-%m-%d %H:%M:%S")))
         except ValueError:
             pass
-    return templates.TemplateResponse(request=request, name="job.html", context={
-        "name": name, "st": st, "log": log, "elapsed": elapsed,
-        "moonraker": moonraker.available(), "moonraker_control": moonraker.control_available(),
-        "fluidd": moonraker.fluidd()})
+    return {"request": request, "name": name, "st": st, "log": log, "elapsed": elapsed,
+            "moonraker": moonraker.available(), "moonraker_control": moonraker.control_available(),
+            "fluidd": moonraker.fluidd()}
+
+
+@app.get("/jobs/{name}", response_class=HTMLResponse)
+async def job_page(request: Request, name: str):
+    return templates.TemplateResponse(request=request, name="job.html", context=_job_context(request, name))
+
+
+@app.get("/jobs/{name}/fragment", response_class=HTMLResponse)
+async def job_fragment(request: Request, name: str):
+    """htmx poll target: just the dynamic body of the job page."""
+    return templates.TemplateResponse(request=request, name="_job_body.html", context=_job_context(request, name))
 
 
 @app.get("/jobs/{name}/files/{path:path}")
