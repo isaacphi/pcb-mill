@@ -303,21 +303,48 @@ resolution: 0.5  # mm max segment length (default 1.0)
 # shaper_type_x: mzv
 # shaper_type_y: mzv
 
-# Homing. Each linear rail has ONE microswitch at ONE end only (X/Y at the
-# min end, Z at the BOTTOM). Stock-style Z homing drives the carriage down
-# onto that switch - with a spindle and bit mounted that means plunging
-# into the workpiece. So: lift Z blindly, home X/Y on their switches, and
-# mark Z homed at a fake position. PCB_MESH finds the real Z=0 on the
-# copper. With axes: xyz this override runs for EVERY G28 variant (G28,
-# G28 X, ...), so no homing path can drive Z into the stock.
+# Homing. Each linear rail has ONE microswitch at ONE end only: X/Y at the min
+# end, Z at the BOTTOM OF THE COLUMN. Z CANNOT be endstop-homed on this
+# machine - see the 2026-10-25 incident in the commissioning log. Start-up is
+# therefore: clear the XY offset, lift Z blindly, home X/Y (real switches),
+# STAMP Z as a label (park_z), then go to the stored board corner.
+# With axes: xyz this override catches EVERY G28 variant (G28, G28 X, G28 Z,
+# Fluidd's home buttons), so no homing path can reach the Z switch.
+[save_variables]
+filename: /home/site3/printer_data/config/variables.cfg
+
 [homing_override]
 axes: xyz
 gcode:
-  FORCE_MOVE STEPPER=stepper_z DISTANCE=20 VELOCITY=5   # lift clear of stock
+  {% set sv = printer.save_variables.variables %}
+  {% set lift = sv.get('lift_mm', 10.0)|float %}
+  {% set park_z = sv.get('park_z', 25.0)|float %}
+  G90
+  SET_GCODE_OFFSET X=0 Y=0                 # parking moves are MACHINE XY
+  {% if 'z' in printer.toolhead.homed_axes %}
+    G91
+    G1 Z{lift} F600                        # relative lift
+    G90
+  {% else %}
+    FORCE_MOVE STEPPER=stepper_z DISTANCE={lift} VELOCITY=5   # blind lift
+  {% endif %}
   G28 X
   G28 Y
-  SET_KINEMATIC_POSITION Z=25 SET_HOMED=Z   # fake Z home, enables jogging/probing
-  {action_respond_info("Z fake-homed - run PCB_MESH with probe clips to set real Z=0")}
+  SET_KINEMATIC_POSITION Z={park_z} SET_HOMED=Z   # LABEL, not a home
+  {% if 'board_x' in sv %}
+    G0 X{sv.board_x|float} Y{sv.board_y|float} F3000   # persisted board corner
+    G92 X0 Y0
+  {% else %}
+    G0 X0 Y0 F3000
+  {% endif %}
+
+# Datums that survive a restart. XY is REAL (endstop-homed), Z is not:
+#   board_x/board_y  machine XY of the board's 0,0 corner (SET_BOARD_ORIGIN)
+#   copper_z         copper Z in the current label frame - diagnostic only
+#   lift_mm          start-up blind lift (SET_STARTUP_LIFT MM=10)
+#   park_z           Z value stamped after the lift (SET_PARK_Z Z=25)
+# Run MILL_STATUS any time to see homed axes, machine vs gcode position,
+# offsets and stored datums.
 
 # LED control (if you want status lights)
 [output_pin LED_R]
@@ -675,10 +702,19 @@ Access from Mac: `⌘+K` → `smb://raspberrypi.local/gcodes`
 ### Before every job (probing)
 
 1. Clamp board, attach probe clips (bit shank + copper), spindle OFF.
-2. `G28` - lifts Z, homes X/Y, fake-homes Z.
-3. Jog XY to the job origin corner, jog Z until the bit is 1-3 mm above the copper.
-4. `PCB_MESH X0=.. Y0=.. X1=.. Y1=..` - probes the grid, sets Z=0 on the copper.
+2. `G28` - lifts Z 10 mm, homes X/Y on their switches, stamps Z as a label
+   (25), and drives XY back to the stored board corner. **Z is never
+   endstop-homed** (the switch is at the bottom of the column - see incident
+   2026-10-25).
+3. First time on a new board position: jog XY to the board's bottom-left
+   corner and run `SET_BOARD_ORIGIN` - it `G92 X0 Y0` *and* persists the
+   machine XY, so every later `G28` returns there by itself.
+4. `PCB_MESH X0=.. Y0=.. X1=.. Y1=..` - probes the grid, sets Z=0 on the
+   copper. This probe is the only true Z datum; do it every session.
 5. **Remove clips.** `M3`, start the file.
+
+`MILL_STATUS` prints homed axes, machine vs g-code position, offsets and the
+stored datums at any time.
 
 ### Option A: Laptop → Pi (Current, Simple)
 
@@ -927,6 +963,23 @@ broke one bit), less vibration, cleaner isolation.
   region params, datum-probes at the region center, and `idle_timeout` no
   longer runs M84 (Klipper v0.12+ clears homed state on stepper disable —
   this kept breaking interactive sessions mid-setup).
+
+**Z homing incident (2026-10-25) — NEVER HOME Z ON THIS MACHINE:**
+- Tried making start-up fully deterministic by homing Z for real, parking at
+  machine X0 Y0 first on the assumption that the area under the tool is
+  clear there. It is not the problem. The problem is the Z switch itself:
+  it sits at the BOTTOM OF THE COLUMN, below the bed.
+- Observed: Z drove far past `position_max` (log: `last_position=…,189.875`)
+  and only stopped at E-stop / loss of MCU comms. Nothing was damaged.
+- Conclusion: Z has NO usable endstop datum. Do not add `G28 Z` back, in any
+  form, including a "just to find the bottom" traversal.
+- What we do instead (current `[homing_override]`): lift 10 mm, home X/Y for
+  real, `SET_KINEMATIC_POSITION Z=25` as a *label*, then XY to the persisted
+  board corner. Z=0 on copper comes from `PCB_MESH`'s probe every session.
+- Consequence for "where are we": XY is real and repeatable across restarts
+  (stored in `variables.cfg` via `SET_BOARD_ORIGIN`, so `G28` returns to the
+  board corner), Z is a per-session label only. `MILL_STATUS` reports both,
+  plus offsets and datums, so the frame is never in doubt.
 
 ## Next Steps
 

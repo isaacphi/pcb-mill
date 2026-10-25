@@ -194,13 +194,20 @@ async def job_file(name: str, path: str):
 
 @app.post("/jobs/{name}/origin")
 async def set_origin(name: str):
-    """Record the bit's current XY as the board corner (job 0,0) via G92."""
+    """Record the bit's current XY as the board corner (job 0,0) via G92.
+
+    Goes through the machine's SET_BOARD_ORIGIN macro rather than a bare
+    ``G92 X0 Y0`` so the corner is also persisted to Klipper's save_variables
+    (variables.cfg): X/Y homing is a real endstop, so that machine XY stays
+    valid across restarts and ``G28`` can drive straight back to the board
+    corner next session.
+    """
     job = JOBS / name
     st = _status(job)
     if st.get("state") != "done":
         raise HTTPException(409, "job not finished")
     x, y = moonraker.toolhead_xy()
-    moonraker.gcode("G92 X0 Y0")
+    moonraker.gcode("SET_BOARD_ORIGIN")
     _set_status(job, origin={"x": round(x, 2), "y": round(y, 2)})
     return RedirectResponse(f"/jobs/{name}", status_code=303)
 
