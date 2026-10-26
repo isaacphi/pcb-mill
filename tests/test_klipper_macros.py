@@ -134,7 +134,7 @@ def test_mesh_travels_at_fixed_clearance_and_picks_bicubic():
     lines, _ = render("PCB_MESH", mesh_params(PTSX="10", PTSY="11"))
     cal = next(l for l in lines if l.startswith("BED_MESH_CALIBRATE"))
     assert "HORIZONTAL_MOVE_Z=2.0" in cal and "ALGORITHM=bicubic" in cal
-    assert "PROBE_COUNT=10,11" in cal and "SAMPLES=1" in cal
+    assert "PROBE_COUNT=10,11" in cal and "SAMPLES=2 " in cal and "SAMPLES_TOLERANCE_RETRIES=3" in cal
     assert "MESH_MIN=28.0,32.0" in cal
 
 

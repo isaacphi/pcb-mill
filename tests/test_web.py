@@ -347,7 +347,7 @@ def test_mesh_route_sends_planned_macro(tmp_path, monkeypatch):
     asyncio.run(run())
     time.sleep(0.5)
     assert sent and sent[0].startswith("PCB_MESH X0=30.400 Y0=32.500")
-    assert "SAMPLES=1" in sent[0]
+    assert "SAMPLES=2" in sent[0]
 
 
 def test_start_and_datum_routes_target_the_mesh_corner(tmp_path, monkeypatch):

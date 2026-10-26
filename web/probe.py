@@ -29,7 +29,8 @@ MARGIN_MM = 1.5        # probe points this far inside the cut extents
 SPACING_MM = 10.0      # max distance between probe points
 MIN_POINTS = 4         # per axis (bicubic mesh needs >= 4)
 MAX_POINTS = 12        # per axis
-SECONDS_PER_POINT = 3.5
+SAMPLES_PER_POINT = 2     # probe touches per mesh point (median; retried if they disagree)
+SECONDS_PER_POINT = 2.8   # measured ~1.45 s/point at 1 sample; ~2.6 s at 2
 
 # Machine travel (stepper_x/y position_max in klipper/printer.cfg) minus a
 # 0.5 mm guard. The origin is the pocket corner, ~(25.4, 27.5).
@@ -93,7 +94,7 @@ class MeshPlan:
 
     def gcode(self) -> str:
         return (f"PCB_MESH X0={self.x0:.3f} Y0={self.y0:.3f} X1={self.x1:.3f} "
-                f"Y1={self.y1:.3f} PTSX={self.nx} PTSY={self.ny} SAMPLES=1")
+                f"Y1={self.y1:.3f} PTSX={self.nx} PTSY={self.ny} SAMPLES={SAMPLES_PER_POINT}")
 
 
 def _count(span: float, spacing: float) -> int:
