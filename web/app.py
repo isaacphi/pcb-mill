@@ -179,8 +179,11 @@ def _plan_for(st: dict, ms: dict | None):
     """MeshPlan for the job at the saved board origin, or None if unknown."""
     if not (st.get("extents") and ms and ms.get("origin")):
         return None
+    boxes = [tuple(b) for b in (st["extents"], st.get("edge_extents")) if b]
+    union = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+             max(b[2] for b in boxes), max(b[3] for b in boxes))
     try:
-        return probe.mesh_plan(tuple(st["extents"]), ms["origin"])
+        return probe.mesh_plan(tuple(st["extents"]), ms["origin"], toolpaths=union)
     except ValueError:
         return None
 
@@ -331,19 +334,45 @@ async def estop(name: str):
     return RedirectResponse(f"/jobs/{name}", status_code=303)
 
 
+@app.post("/jobs/{name}/jog")
+async def jog(name: str, dz: float = Form(...)):
+    """Z jog. Up is a plain move; down is a bounded probe descent (stops on copper)."""
+    _job_ready(name)
+    if dz == 0 or abs(dz) > 10:
+        raise HTTPException(400, "dz must be non-zero and within ±10 mm")
+    try:
+        await asyncio.to_thread(moonraker.gcode, f"JOG_Z DZ={dz:g}", 60)
+    except moonraker.KlipperError as e:
+        # a bounded descent that finds nothing is the normal outcome of "jog down"
+        if "No trigger on probe" not in str(e):
+            raise HTTPException(409, str(e))
+    return RedirectResponse(f"/jobs/{name}", status_code=303)
+
+
+# which generated file gets which header (drill/edge go below the copper -> PCB_DEEP)
+RUN_FILES = (("isolation.nc", False), ("drill.nc", True), ("edge.nc", True))
+
+
 @app.post("/jobs/{name}/send")
 async def send_to_machine(name: str):
-    """Upload the isolation job (PCB_READY header first) once datum + mesh are live."""
+    """Upload isolation, drill and edge jobs (each with a PCB_READY header) once
+    datum + mesh are live for this board position."""
     job, st = _job_ready(name)
     ms = _live()
     plan = _plan_for(st, ms)
     if not (ms and ms["datum_done"] and plan and _mesh_covers(plan, ms)):
         raise HTTPException(409, "datum and mesh must be done for this board position first")
-    src = job / "out" / "isolation.nc"
-    if not src.exists():
+    out = job / "out"
+    if not (out / "isolation.nc").exists():
         raise HTTPException(409, "isolation.nc missing (double-sided jobs are not supported yet)")
-    run = job / "out" / "isolation_run.nc"
-    run.write_text(probe.with_header(src.read_text(), tuple(st["extents"])))
-    moonraker.upload(run, subdir=f"pcb-mill/{name}")
-    _set_status(job, sent=[run.name])
+    sent = []
+    for src_name, deep in RUN_FILES:
+        src = out / src_name
+        if not src.exists():
+            continue
+        run = out / f"{len(sent) + 1}_{src.stem}_run.nc"
+        run.write_text(probe.with_header(src.read_text(), plan.job, deep))
+        moonraker.upload(run, subdir=f"pcb-mill/{name}")
+        sent.append(run.name)
+    _set_status(job, sent=sent)
     return RedirectResponse(f"/jobs/{name}", status_code=303)

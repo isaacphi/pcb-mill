@@ -20,9 +20,11 @@ from pathlib import Path
 MOVE_RE = re.compile(r"^\s*G0?[01](\s|$)")
 WORD_RE = re.compile(r"([XY])(-?\d+(?:\.\d+)?)")
 
-BOARD_MAX_MM = 100.0   # the bed pocket: board outline must fit
-CUT_MAX_MM = 97.0      # area that gets milled/probed: margin from the board edge
+POCKET_MM = 100.0      # the bed pocket (work area): job coords 0..100 on both axes
+CUT_SLACK_MM = 1.0     # isolation paths may run ~half a bit past the board edge (cutting air)
+BOARD_SLACK_MM = 0.5   # gerber outlines are rarely exactly 100.0
 EDGE_TOOL_MM = 0.8     # edge.nc is the tool-centre path, one bit wider than the board
+PROBE_WINDOW = (5.0, 95.0)   # only probe inside this job-coordinate box (clear of the pocket walls)
 MARGIN_MM = 1.5        # probe points this far inside the cut extents
 SPACING_MM = 10.0      # max distance between probe points
 MIN_POINTS = 4         # per axis (bicubic mesh needs >= 4)
@@ -30,9 +32,8 @@ MAX_POINTS = 12        # per axis
 SECONDS_PER_POINT = 3.5
 
 # Machine travel (stepper_x/y position_max in klipper/printer.cfg) minus a
-# 1 mm guard. The bed is bigger than the pocket, but Klipper refuses moves
-# beyond position_max.
-MACHINE_MAX = (119.0, 119.0)
+# 0.5 mm guard. The origin is the pocket corner, ~(25.4, 27.5).
+MACHINE_MAX = (126.0, 128.0)
 MACHINE_MIN = (-3.0, -3.0)
 
 Extents = tuple[float, float, float, float]
@@ -62,16 +63,15 @@ def validate_job(cut: Extents | None, edge: Extents | None = None) -> str | None
     if cut is None:
         return "no cut paths found in the generated G-code"
     w, h = size_of(cut)
-    if w > CUT_MAX_MM or h > CUT_MAX_MM:
-        return (f"cut area is {w:.1f} × {h:.1f} mm; the limit is {CUT_MAX_MM:.0f} × "
-                f"{CUT_MAX_MM:.0f} mm (board must fit the {BOARD_MAX_MM:.0f} mm pocket "
-                "with margin) — shrink the board")
+    if w > POCKET_MM + CUT_SLACK_MM or h > POCKET_MM + CUT_SLACK_MM:
+        return (f"cut area is {w:.1f} × {h:.1f} mm; the limit is {POCKET_MM:.0f} × "
+                f"{POCKET_MM:.0f} mm (the bed pocket) — shrink the board")
     if edge is not None:
         bw, bh = size_of(edge)
-        lim = BOARD_MAX_MM + EDGE_TOOL_MM
+        lim = POCKET_MM + EDGE_TOOL_MM + BOARD_SLACK_MM
         if bw > lim or bh > lim:
             return (f"board outline is {bw - EDGE_TOOL_MM:.1f} × {bh - EDGE_TOOL_MM:.1f} mm; "
-                    f"max is {BOARD_MAX_MM:.0f} × {BOARD_MAX_MM:.0f} mm")
+                    f"the limit is {POCKET_MM:.0f} × {POCKET_MM:.0f} mm (the bed pocket)")
     return None
 
 
@@ -86,6 +86,7 @@ class MeshPlan:
     seconds: int
     fits: bool
     problem: str | None
+    job: Extents = (0.0, 0.0, 0.0, 0.0)   # the same region in JOB coordinates
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -104,44 +105,54 @@ def mesh_plan(
     origin: tuple[float, float],
     margin: float = MARGIN_MM,
     spacing: float = SPACING_MM,
+    window: tuple[float, float] = PROBE_WINDOW,
+    toolpaths: Extents | None = None,
 ) -> MeshPlan:
-    """Mesh region (machine coords) over the cut extents, shifted by `origin`.
+    """Mesh region over the cut extents: shrunk by `margin`, clipped to the
+    probe `window`, shifted by the board `origin` into machine coordinates.
 
-    `fits` is False when any point would be outside machine travel; `problem`
-    says by how much, so the UI can tell the user to move the board origin.
+    `fits` is False when the mesh (or, if given, the whole `toolpaths` box)
+    would leave machine travel; `problem` says by how much.
     """
     ox, oy = origin
-    x0, y0, x1, y1 = cut[0] + margin, cut[1] + margin, cut[2] - margin, cut[3] - margin
+    lo, hi = window
+    x0, y0 = max(cut[0] + margin, lo), max(cut[1] + margin, lo)
+    x1, y1 = min(cut[2] - margin, hi), min(cut[3] - margin, hi)
     if x1 <= x0 or y1 <= y0:
-        raise ValueError(f"cut area too small for margin {margin} mm: {cut}")
-    mx0, my0, mx1, my1 = x0 + ox, y0 + oy, x1 + ox, y1 + oy
+        raise ValueError(f"cut area too small for the probe window/margin: {cut}")
     nx, ny = _count(x1 - x0, spacing), _count(y1 - y0, spacing)
 
     problem = None
-    over_x, over_y = mx1 - MACHINE_MAX[0], my1 - MACHINE_MAX[1]
-    if over_x > 0 or over_y > 0 or mx0 < MACHINE_MIN[0] or my0 < MACHINE_MIN[1]:
-        bits = []
-        if over_x > 0:
-            bits.append(f"{over_x:.1f} mm past X travel")
-        if over_y > 0:
-            bits.append(f"{over_y:.1f} mm past Y travel")
-        if mx0 < MACHINE_MIN[0] or my0 < MACHINE_MIN[1]:
-            bits.append("below X/Y minimum")
-        problem = ("with the board origin at machine "
-                   f"{ox:.1f}, {oy:.1f} the mesh is " + ", ".join(bits) +
-                   " — move the board origin toward the bed's X/Y zero")
-    return MeshPlan(round(mx0, 3), round(my0, 3), round(mx1, 3), round(my1, 3), nx, ny,
-                    int(nx * ny * SECONDS_PER_POINT), problem is None, problem)
+    boxes = [(x0, y0, x1, y1)] + ([toolpaths] if toolpaths else [])
+    over = []
+    for bx0, by0, bx1, by1 in boxes:
+        if bx1 + ox > MACHINE_MAX[0]:
+            over.append(f"{bx1 + ox - MACHINE_MAX[0]:.1f} mm past X travel")
+        if by1 + oy > MACHINE_MAX[1]:
+            over.append(f"{by1 + oy - MACHINE_MAX[1]:.1f} mm past Y travel")
+        if bx0 + ox < MACHINE_MIN[0] or by0 + oy < MACHINE_MIN[1]:
+            over.append("below X/Y minimum")
+    if over:
+        problem = (f"with the board origin at machine {ox:.1f}, {oy:.1f} the job is "
+                   + ", ".join(dict.fromkeys(over)) +
+                   " — move the board origin or raise position_max")
+    return MeshPlan(round(x0 + ox, 3), round(y0 + oy, 3), round(x1 + ox, 3), round(y1 + oy, 3),
+                    nx, ny, int(nx * ny * SECONDS_PER_POINT), problem is None, problem,
+                    (round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3)))
 
 
 # ---------------------------------------------------------------------------
 # G-code header: refuse to cut without a datum + mesh that cover this job
 # ---------------------------------------------------------------------------
-def ready_header(cut: Extents) -> str:
-    """Lines prepended to the job file; PCB_READY aborts the print if the live
-    Klipper session has no datum/mesh covering these job-coordinate extents."""
-    return (f"PCB_READY X0={cut[0]:.3f} Y0={cut[1]:.3f} X1={cut[2]:.3f} Y1={cut[3]:.3f}\n")
+def ready_header(region: Extents, deep: bool = False) -> str:
+    """Lines prepended to a job file. `region` is the mesh region in job
+    coordinates. PCB_READY aborts the print unless the live Klipper session has
+    a datum and a mesh covering it at the current board origin. Drill/edge files
+    also get PCB_DEEP (room below the copper; no motion)."""
+    head = (f"PCB_READY X0={region[0]:.3f} Y0={region[1]:.3f} "
+            f"X1={region[2]:.3f} Y1={region[3]:.3f}\n")
+    return head + ("PCB_DEEP\n" if deep else "")
 
 
-def with_header(gcode: str, cut: Extents) -> str:
-    return ready_header(cut) + gcode
+def with_header(gcode: str, region: Extents, deep: bool = False) -> str:
+    return ready_header(region, deep) + gcode

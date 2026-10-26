@@ -1,3 +1,13 @@
+{% macro jog(up_only=False) %}
+<form method="post" action="/jobs/{{ name }}/jog" class="jog">
+  <span class="dim">Z jog (mm):</span>
+  {% if not up_only %}
+  {% for d in [5, 1, 0.2, 0.05] %}<button name="dz" value="-{{ d }}" class="secondary" title="down {{ d }} mm (stops on copper)">▼ {{ d }}</button>{% endfor %}
+  {% endif %}
+  {% for d in [0.05, 0.2, 1, 5] %}<button name="dz" value="{{ d }}" class="secondary">▲ {{ d }}</button>{% endfor %}
+  <span class="dim">bit Z label {{ "%.2f"|format(ms.position[2]) }}</span>
+</form>
+{% endmacro %}
 {# Dynamic body of the job page — rendered inline on first paint and polled via htmx. #}
 
 {% if st.state == "done" %}
@@ -43,7 +53,7 @@
   {% if moonraker_control %}
 <h2>Machine</h2>
 {% if st.board %}<p>Cut area: <b>{{ st.board.w }} × {{ st.board.h }} mm</b>
-  (limit 97 × 97) — mesh points ≤ 10&nbsp;mm apart, inside the cut area.</p>{% endif %}
+  (pocket 100 × 100) — mesh points ≤ 10&nbsp;mm apart, only inside 5…95&nbsp;mm.</p>{% endif %}
 
 {% if not ms %}
 <p class="err">Klipper is not reachable — is the printer in an error state? (Fluidd → FIRMWARE_RESTART)</p>
@@ -79,9 +89,10 @@ bottom-left corner, then:</p>
 <form method="post" action="/jobs/{{ name }}/home"><button>Home (G28) — goes to the saved board corner</button></form>
   {% elif not steps.datum %}
 <ol class="setup">
-  <li>In <a href="{{ fluidd }}" target="_blank">Fluidd</a>, jog Z down until the bit is about <b>2 mm above the copper</b> (never lower than that — the search only goes 3 mm)</li>
-  <li>Check both probe clips are on</li>
+  <li>Probe clips on (bit shank + copper). Jog Z down until the bit is about <b>2 mm above the copper</b> — the downward jog stops by itself if the bit touches copper</li>
+  <li>Move X/Y in <a href="{{ fluidd }}" target="_blank">Fluidd</a> if needed (the datum is taken at the bit's current X/Y)</li>
 </ol>
+{{ jog() }}
 <form method="post" action="/jobs/{{ name }}/datum"><button>Find the copper (3 mm search)</button></form>
 <p class="dim">"No trigger" means the bit is still above the copper — lower it a little and run again.</p>
   {% elif not steps.mesh %}
@@ -94,6 +105,7 @@ bottom-left corner, then:</p>
 <p class="err">{{ plan.problem if plan else "Board origin not set." }}</p>
     {% endif %}
   {% else %}
+{{ jog(up_only=True) }}
 <p class="ok">Mesh ready: surface {{ "%.3f"|format(ms.mesh.lo) }} … {{ "%.3f"|format(ms.mesh.hi) }} mm
   (spread {{ "%.3f"|format(ms.mesh.hi - ms.mesh.lo) }} mm). Z0 is the copper surface.</p>
 <table class="mesh">
@@ -118,8 +130,9 @@ bottom-left corner, then:</p>
   {% endfor %}
 </ul>
   {% if st.sent %}
-<p class="ok">Sent — open <a href="{{ fluidd }}" target="_blank"><b>Fluidd</b></a> → Jobs → <b>pcb-mill/{{ name }}/{{ st.sent[0] }}</b>
-  and press Print. The file starts with <code>PCB_READY</code>, which refuses to run without a live datum and mesh. Watch the first pass.</p>
+<p class="ok">Sent to <a href="{{ fluidd }}" target="_blank"><b>Fluidd</b></a> → Jobs → <b>pcb-mill/{{ name }}</b>. Run them in this order, watching each:</p>
+<ol>{% for f in st.sent %}<li><code>{{ f }}</code></li>{% endfor %}</ol>
+<p class="dim">Every file starts with <code>PCB_READY</code>, which refuses to run without a live datum and mesh for this board position. Drill and edge files also open room below the copper (<code>PCB_DEEP</code>). Don't run <code>G28</code> or move the board between files.</p>
   {% elif not moonraker %}
 <p class="dim">Download the .nc files and upload them in Fluidd.</p>
   {% endif %}

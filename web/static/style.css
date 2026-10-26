@@ -35,3 +35,4 @@ img.preview { max-width: 100%; border: 1px solid #ccc; }
 button.danger { background: #b00; font-weight: 700; }
 button.danger:hover { background: #800; }
 table.mesh td { font-family: ui-monospace, monospace; font-size: .85rem; padding: .2rem .5rem; text-align: right; }
+form.jog { margin: .6rem 0; } form.jog button { padding: .3rem .7rem; margin: 0 .15rem; }

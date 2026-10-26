@@ -45,20 +45,30 @@ def render(name: str, params=None, printer=None, variables=None):
 
 
 def fake_printer(homed="xyz", datum_done=1, profile="default", pos=(26.0, 30.0, 5.0),
-                 gcode_pos=(0.0, 0.0, 5.0), mesh_min=(2.0, 2.0), mesh_max=(120.0, 118.0)):
+                 gcode_pos=(0.0, 0.0, 5.0), mesh_min=(2.0, 2.0), mesh_max=(120.0, 118.0), deep=0, offz=None):
     return {
         "toolhead": {"homed_axes": homed, "position": list(pos)},
-        "gcode_move": {"gcode_position": list(gcode_pos)},
+        "gcode_move": {"gcode_position": list(gcode_pos),
+                       "homing_origin": [0.0, 0.0, deep if offz is None else offz, 0.0]},
         "gcode_macro PCB_DATUM": {"done": datum_done},
         "bed_mesh": {"profile_name": profile, "mesh_min": list(mesh_min), "mesh_max": list(mesh_max),
                      "probed_matrix": [[0.0, 0.1], [0.05, 0.2]]},
         "probe": {"last_probe_position": [26.0, 30.0, 0.44]},
+        "gcode_macro PCB_DEEP": {"shift": deep},
     }
 
 
 # ---------------------------------------------------------------- config sanity
 def test_z_floor_is_half_a_mm():
     assert re.search(r"\[stepper_z\][^\[]*position_min:\s*-0\.5\b", CFG)
+
+
+def test_no_negative_number_right_after_open_brace():
+    """Klipper's Jinja uses '{' as the variable delimiter, so '{-2.75 + x}' parses
+    '-' as whitespace control and silently evaluates '2.75 + x'. This sign flip
+    relabelled Z wrongly and drove the bit into the board. Use {% set %} instead."""
+    assert not re.search(r"\{-", CFG)
+    assert not re.search(r"\{\+", CFG)
 
 
 def test_braces_balance():
@@ -181,3 +191,73 @@ def test_homing_invalidates_datum_and_mesh_before_moving():
     assert i_var < sec.index("G28 X") and i_clr < sec.index("G28 X")
     assert i_clr < sec.index("G1 Z")        # no mesh-adjusted lift
     assert "G28 Z" not in sec.replace("NEVER G28 Z", "")
+
+
+# ------------------------------------------------------------------- PCB_DEEP
+def test_deep_shifts_frame_without_moving():
+    lines, _ = render("PCB_DEEP", printer=fake_printer(pos=(30.0, 30.0, 1.5)))
+    assert "SET_KINEMATIC_POSITION Z=4.5" in lines          # label +3, no motion
+    assert "SET_GCODE_OFFSET Z=3.0" in lines                # gcode Z0 stays on the copper
+    assert not any(l.startswith(("G0", "G1", "PROBE")) for l in lines)
+    assert any("VARIABLE=shift VALUE=3.0" in l for l in lines)
+
+
+def test_deep_is_idempotent():
+    lines, _ = render("PCB_DEEP", printer=fake_printer(deep=3.0))
+    assert lines == []
+
+
+@pytest.mark.parametrize("kw", [{"datum_done": 0}, {"profile": ""}])
+def test_deep_needs_datum_and_mesh(kw):
+    with pytest.raises(MacroError):
+        render("PCB_DEEP", printer=fake_printer(**kw))
+
+
+def test_mesh_refuses_in_deep_frame():
+    with pytest.raises(MacroError, match="deep frame"):
+        render("PCB_MESH", mesh_params(), fake_printer(deep=3.0))
+
+
+def test_ready_accepts_deep_frame_and_refuses_stray_z_offset():
+    render("PCB_READY", READY, fake_printer(deep=3.0))             # offset 3 == shift 3
+    with pytest.raises(MacroError, match="Z offset"):
+        render("PCB_READY", READY, fake_printer(deep=0, offz=0.5))  # someone nudged the offset
+    with pytest.raises(MacroError, match="Z offset"):
+        render("PCB_READY", READY, fake_printer(deep=3.0, offz=0.0))
+
+
+def test_datum_and_homing_reset_deep_frame():
+    lines, _ = render("PCB_DATUM", {"DEPTH": "3"})
+    assert any("MACRO=PCB_DEEP VARIABLE=shift VALUE=0" in l for l in lines)
+    sec = CFG[CFG.index("[homing_override]"):]
+    assert "MACRO=PCB_DEEP VARIABLE=shift VALUE=0" in sec[: sec.index("\n[", 5)]
+
+
+# --------------------------------------------------------------------- JOG_Z
+def test_jog_up_is_a_relative_move():
+    lines, _ = render("JOG_Z", {"DZ": "1"})
+    assert lines == ["G91", "G1 Z1.0 F600", "G90"]
+
+
+def test_jog_down_is_a_bounded_probe_descent():
+    lines, _ = render("JOG_Z", {"DZ": "-2"}, fake_printer(datum_done=0))
+    i = lines.index("SET_KINEMATIC_POSITION Z=1.5")          # floor (-0.5) is exactly 2 mm below
+    assert lines[i + 1] == "PROBE SAMPLES=1"
+    assert "G91" not in lines[:i]
+
+
+@pytest.mark.parametrize("dz", ["0", "11", "-11"])
+def test_jog_limits(dz):
+    with pytest.raises(MacroError):
+        render("JOG_Z", {"DZ": dz}, fake_printer(datum_done=0))
+
+
+def test_jog_down_refused_after_datum():
+    with pytest.raises(MacroError, match="datum is set"):
+        render("JOG_Z", {"DZ": "-1"}, fake_printer(datum_done=1))
+    render("JOG_Z", {"DZ": "1"}, fake_printer(datum_done=1))     # up is always fine
+
+
+def test_origin_needs_xy_homed():
+    with pytest.raises(MacroError, match="not homed"):
+        render("SET_BOARD_ORIGIN", printer={**fake_printer(homed="")})
