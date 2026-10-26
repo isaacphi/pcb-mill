@@ -388,7 +388,9 @@ async def send_to_machine(name: str):
         src = out / src_name
         if not src.exists():
             continue
-        run = out / f"{len(sent) + 1}_{src.stem}_run.nc"
+        # Klipper's virtual_sdcard only lists .gcode/.g/.gco; a .nc file is
+        # invisible to it and "Print" fails with "Unable to open file".
+        run = out / f"{len(sent) + 1}_{src.stem}_run.gcode"
         run.write_text(probe.with_header(src.read_text(), plan.job, deep))
         moonraker.upload(run, subdir=f"pcb-mill/{name}")
         sent.append(run.name)
