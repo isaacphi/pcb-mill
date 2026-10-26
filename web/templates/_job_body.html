@@ -88,13 +88,22 @@ bottom-left corner, then:</p>
 </ol>
 <form method="post" action="/jobs/{{ name }}/home"><button>Home (G28) — goes to the saved board corner</button></form>
   {% elif not steps.datum %}
+    {% if plan and not steps.at_start %}
 <ol class="setup">
-  <li>Probe clips on (bit shank + copper). Jog Z down until the bit is about <b>2 mm above the copper</b> — the downward jog stops by itself if the bit touches copper</li>
-  <li>Move X/Y in <a href="{{ fluidd }}" target="_blank">Fluidd</a> if needed (the datum is taken at the bit's current X/Y)</li>
+  <li>Probe clips on (bit shank + copper)</li>
+  <li>The bit is still high after homing. Move it over the probe start point first: job X{{ "%g"|format(plan.job[0]) }}, Y{{ "%g"|format(plan.job[1]) }}</li>
+</ol>
+<form method="post" action="/jobs/{{ name }}/start"><button>Go to probe start (X{{ "%g"|format(plan.job[0]) }} Y{{ "%g"|format(plan.job[1]) }})</button></form>
+    {% else %}
+<ol class="setup">
+  <li>Jog Z down until the bit is about <b>2 mm above the copper</b> — the downward jog stops by itself if the bit touches copper</li>
+  <li>Then Find the copper: a 3 mm search from here</li>
 </ol>
 {{ jog() }}
 <form method="post" action="/jobs/{{ name }}/datum"><button>Find the copper (3 mm search)</button></form>
-<p class="dim">"No trigger" means the bit is still above the copper — lower it a little and run again.</p>
+<p class="dim">"No trigger" means the bit is still above the copper — lower it a little and run again.
+  The bit is at job X{{ "%.1f"|format(ms.position[0] - ms.origin[0]) }} Y{{ "%.1f"|format(ms.position[1] - ms.origin[1]) }}.</p>
+    {% endif %}
   {% elif not steps.mesh %}
     {% if plan and plan.fits %}
 <p>Mesh: <b>{{ plan.nx }} × {{ plan.ny }}</b> points over machine
@@ -116,7 +125,7 @@ bottom-left corner, then:</p>
 <p class="dim">Top row = highest Y. A tilt is fine — the cut follows it.</p>
     {% if not st.sent %}
 <p><b>Remove both probe clips</b> before cutting.</p>
-<form method="post" action="/jobs/{{ name }}/send"><button>Send job to machine</button></form>
+<form method="post" action="/jobs/{{ name }}/send"><button>Send job &amp; open Fluidd</button></form>
     {% endif %}
   {% endif %}
 {% endif %}

@@ -261,3 +261,34 @@ def test_jog_down_refused_after_datum():
 def test_origin_needs_xy_homed():
     with pytest.raises(MacroError, match="not homed"):
         render("SET_BOARD_ORIGIN", printer={**fake_printer(homed="")})
+
+
+# ------------------------------------------------------- go to the probe start
+def test_datum_moves_xy_before_opening_the_search_window():
+    lines, _ = render("PCB_DATUM", {"DEPTH": "3", "X": "5", "Y": "5"})
+    i_move, i_reloc, i_probe = (lines.index("G0 X5.0 Y5.0 F3000"),
+                                lines.index("SET_KINEMATIC_POSITION Z=2.5"),
+                                lines.index("PROBE SAMPLES=1"))
+    assert i_move < i_reloc < i_probe
+    assert not any(re.match(r"G0 .*Z", l) for l in lines)       # XY only: Z untouched
+
+
+def test_datum_without_xy_stays_put():
+    lines, _ = render("PCB_DATUM", {"DEPTH": "3"})
+    # no X/Y given: "moves" to where it already is (gcode position)
+    assert any(l.startswith("G0 X0.0 Y0.0") for l in lines)
+
+
+@pytest.mark.parametrize("xy", [("-1", "5"), ("5", "101"), ("150", "5")])
+def test_datum_and_start_refuse_outside_pocket(xy):
+    with pytest.raises(MacroError, match="pocket"):
+        render("PCB_DATUM", {"X": xy[0], "Y": xy[1]})
+    with pytest.raises(MacroError, match="pocket"):
+        render("PCB_TO_START", {"X": xy[0], "Y": xy[1]})
+
+
+def test_to_start_is_xy_only_and_needs_homing():
+    lines, _ = render("PCB_TO_START", {"X": "5", "Y": "5"})
+    assert lines == ["G90", "G0 X5.0 Y5.0 F3000"]
+    with pytest.raises(MacroError, match="not homed"):
+        render("PCB_TO_START", {"X": "5", "Y": "5"}, fake_printer(homed=""))

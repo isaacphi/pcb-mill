@@ -323,9 +323,12 @@ def test_steps_follow_live_klipper_state(tmp_path, monkeypatch):
     job = _job("wf-1")
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
     assert "Home (G28)" in r.text and "Find the copper" not in r.text
-    _fake_machine(monkeypatch, tmp_path, datum_done=False)
+    _fake_machine(monkeypatch, tmp_path, datum_done=False)          # still at the corner, high
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Find the copper" in r.text and "Probe &amp; mesh" not in r.text
+    assert "Go to probe start (X5 Y5)" in r.text and "Find the copper" not in r.text
+    _fake_machine(monkeypatch, tmp_path, datum_done=False, position=[30.4, 32.5, 12.0])
+    r = TestClient(webapp.app).get(f"/jobs/{job.name}")
+    assert "Find the copper" in r.text and "Probe &amp; mesh" not in r.text and "Z jog" in r.text
     _fake_machine(monkeypatch, tmp_path, datum_done=True)
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
     assert "Probe &amp; mesh" in r.text and "10 × 10" in r.text
@@ -345,6 +348,19 @@ def test_mesh_route_sends_planned_macro(tmp_path, monkeypatch):
     time.sleep(0.5)
     assert sent and sent[0].startswith("PCB_MESH X0=30.400 Y0=32.500")
     assert "SAMPLES=1" in sent[0]
+
+
+def test_start_and_datum_routes_target_the_mesh_corner(tmp_path, monkeypatch):
+    _, sent = _fake_machine(monkeypatch, tmp_path, datum_done=False)
+    job = _job("wf-8")
+    with TestClient(webapp.app) as c:
+        assert c.post(f"/jobs/{job.name}/start", follow_redirects=False).status_code == 303
+        time.sleep(0.5)
+        webapp._RUNNING.clear()
+        assert c.post(f"/jobs/{job.name}/datum", follow_redirects=False).status_code == 303
+        time.sleep(0.5)
+    assert sent[0] == "PCB_TO_START X=5 Y=5"
+    assert sent[1] == "PCB_DATUM X=5 Y=5 DEPTH=3"
 
 
 def test_mesh_route_refuses_without_datum(tmp_path, monkeypatch):
@@ -371,11 +387,24 @@ def test_send_requires_mesh_covering_job(tmp_path, monkeypatch):
                       matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
     r = TestClient(webapp.app).post(f"/jobs/{job.name}/send", follow_redirects=False)
     assert r.status_code == 303
+    assert r.headers["location"].endswith(":8080/#/jobs")        # straight on to Fluidd
     d = tmp_path / "gcodes" / "pcb-mill" / job.name
     iso = (d / "1_isolation_run.nc").read_text()
     assert iso.startswith(f"PCB_READY X0={plan.job[0]:.3f}") and "PCB_DEEP" not in iso
     assert (d / "2_drill_run.nc").read_text().splitlines()[1] == "PCB_DEEP"
     assert (d / "3_edge_run.nc").read_text().splitlines()[1] == "PCB_DEEP"
+
+
+def test_klipper_rounded_mesh_bounds_still_count_as_covering(tmp_path, monkeypatch):
+    """Klipper re-rounds mesh_max to its grid (planned 88.858 -> reported 88.84);
+    that must not leave the page stuck on the mesh step."""
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job("wf-9", extents=[0.0, 0.0, 64.96, 99.63], edge_extents=[0.0, 0.0, 65.4, 100.05])
+    plan = probe.mesh_plan((0.0, 0.0, 64.96, 99.63), (25.4, 27.5))
+    ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1 - 0.018, plan.y1],
+                      matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
+    r = TestClient(webapp.app).get(f"/jobs/{job.name}")
+    assert "Send job &amp; open Fluidd" in r.text
 
 
 def test_send_refuses_mesh_that_is_too_small(tmp_path, monkeypatch):

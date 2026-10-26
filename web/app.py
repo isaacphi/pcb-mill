@@ -192,7 +192,7 @@ def _mesh_covers(plan, ms: dict) -> bool:
     m = ms["mesh"]
     if not (plan and m["profile"] and m["min"] and m["max"]):
         return False
-    tol = 0.01
+    tol = 0.25   # Klipper re-rounds the mesh bounds to its grid (e.g. 88.858 -> 88.84)
     return (m["min"][0] <= plan.x0 + tol and m["min"][1] <= plan.y0 + tol
             and m["max"][0] >= plan.x1 - tol and m["max"][1] >= plan.y1 - tol)
 
@@ -219,6 +219,10 @@ def _job_context(request: Request, name: str) -> dict:
             "datum": ms["datum_done"],
             "mesh": _mesh_covers(plan, ms),
         }
+        if plan and ms["origin"]:
+            at_x = ms["position"][0] - ms["origin"][0]
+            at_y = ms["position"][1] - ms["origin"][1]
+            steps["at_start"] = abs(at_x - plan.job[0]) < 0.3 and abs(at_y - plan.job[1]) < 0.3
     return {"request": request, "name": name, "st": st, "log": log, "elapsed": elapsed,
             "moonraker": moonraker.available(), "moonraker_control": moonraker.control_available(),
             "fluidd": moonraker.fluidd(), "ms": ms, "plan": plan, "steps": steps,
@@ -304,7 +308,21 @@ async def datum(name: str):
     ms = _live()
     if not ms or not all(a in ms["homed"] for a in "xyz"):
         raise HTTPException(409, "home first")
-    return _start(job, "datum", "PCB_DATUM DEPTH=3", timeout=60)
+    plan = _plan_for(_status(job), ms)
+    if plan is None:
+        raise HTTPException(409, "board origin not set")
+    # the macro moves to the start point first (a no-op if the bit is already there)
+    return _start(job, "datum", f"PCB_DATUM X={plan.job[0]:g} Y={plan.job[1]:g} DEPTH=3", timeout=90)
+
+
+@app.post("/jobs/{name}/start")
+async def goto_start(name: str):
+    """Move X/Y to the probe start point (mesh corner) at the current height."""
+    job, st = _job_ready(name)
+    plan = _plan_for(st, _live())
+    if plan is None:
+        raise HTTPException(409, "board origin not set")
+    return _start(job, "start", f"PCB_TO_START X={plan.job[0]:g} Y={plan.job[1]:g}", timeout=60)
 
 
 @app.post("/jobs/{name}/mesh")
@@ -375,4 +393,5 @@ async def send_to_machine(name: str):
         moonraker.upload(run, subdir=f"pcb-mill/{name}")
         sent.append(run.name)
     _set_status(job, sent=sent)
-    return RedirectResponse(f"/jobs/{name}", status_code=303)
+    # straight on to Fluidd's job list: that is where the cut is started
+    return RedirectResponse(f"{moonraker.fluidd()}/#/jobs", status_code=303)
