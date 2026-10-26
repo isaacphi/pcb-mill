@@ -1031,14 +1031,15 @@ class GerberToGcode:
             
             depth = 0.0
             while depth < tool.total_depth:
+                prev = depth
                 depth = min(depth + tool.bore_step_down, tool.total_depth)
                 # Helix down one revolution with segments
                 for i in range(1, num_segments + 1):
                     angle = i * angle_step
                     x = gx + r * math.cos(angle)
                     y = gy + r * math.sin(angle)
-                    # Z descends gradually during the revolution
-                    z = -(depth - tool.bore_step_down + (tool.bore_step_down * i / num_segments))
+                    # Z descends gradually during the revolution (prev -> depth)
+                    z = -(prev + (depth - prev) * i / num_segments)
                     cmds.append(f"G1 X{x:.4f} Y{y:.4f} Z{z:.4f} F{tool.feed_rate}")
             
             # Final flat circle at bottom to clean floor
@@ -1053,7 +1054,7 @@ class GerberToGcode:
             return cmds
 
         def _drill_at(gx: float, gy: float, diameter: float = None) -> List[str]:
-            if diameter is not None and diameter > tool.tool_diameter + 0.05 + 1e-6:
+            if diameter is not None and diameter - tool.tool_diameter > tool.bore_tolerance + 1e-6:
                 return _bore_at(gx, gy, diameter)
             cmds = [f"G0 X{gx:.4f} Y{gy:.4f} Z{self.safe_height}"]
             if tool.cut_depth > 0 and tool.cut_depth < tool.total_depth:

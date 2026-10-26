@@ -141,6 +141,39 @@ def test_convert_sample_board_direct(tmp_path):
     assert "onesided.nc" in st["files"]
     assert st["mirror_x"] > 0
     assert (tmp_path / "out" / "toolpaths.png").exists()
+    moves, longest = _check_drill_bores(tmp_path / "out" / "drill.nc")
+    assert moves > 100                      # the sample board has bored holes
+    assert longest <= 0.12, longest
+
+
+def _check_drill_bores(path):
+    """Helical bores must be real: G1 chords <= ~0.12 mm (Klipper's G2 needs
+    resolution < the helix radius or it degenerates to a plunge), Z never
+    rising mid-hole, and no G2/G3 left for Klipper to segment."""
+    import math
+    import re
+    lines = path.read_text().splitlines()
+    assert not any(re.match(r"\s*G0?[23]\b", l) for l in lines), "arcs in drill file"
+    pos = None
+    z = None
+    moves = 0
+    longest = 0.0
+    for l in lines:
+        m = re.match(r"G1 X(-?[\d.]+) Y(-?[\d.]+)(?: Z(-?[\d.]+))? ", l)
+        if not m:
+            pos = None if l.startswith("G0") else pos
+            if l.startswith("G0") or l.startswith("G1 Z"):
+                z = None if l.startswith("G0") else z
+            continue
+        x, y = float(m.group(1)), float(m.group(2))
+        nz = float(m.group(3)) if m.group(3) else z
+        if pos is not None:
+            longest = max(longest, math.hypot(x - pos[0], y - pos[1]))
+            if z is not None and nz is not None:
+                assert nz <= z + 1e-6, f"Z rises inside a bore: {z} -> {nz}"
+            moves += 1
+        pos, z = (x, y), nz
+    return moves, longest
 
 
 def test_http_job_flow():
