@@ -36,3 +36,9 @@ button.danger { background: #b00; font-weight: 700; }
 button.danger:hover { background: #800; }
 table.mesh td { font-family: ui-monospace, monospace; font-size: .85rem; padding: .2rem .5rem; text-align: right; }
 form.jog { margin: .6rem 0; } form.jog button { padding: .3rem .7rem; margin: 0 .15rem; }
+#drop { border: 2px dashed #aab; border-radius: 8px; padding: 1.5rem; text-align: center; margin: 1rem 0; }
+#drop.over { background: #eef; border-color: #446; }
+#found { list-style: none; padding: 0; margin: .8rem 0; text-align: left; display: inline-block; }
+#found li { font-size: .9rem; }
+label.link { color: #446; text-decoration: underline; cursor: pointer; }
+table.jobs td { padding: .3rem .8rem; }

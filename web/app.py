@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import config_render, excellon, moonraker, probe
+from . import config_render, detect, excellon, moonraker, probe
 
 ROOT = Path(__file__).resolve().parent.parent
 JOBS = Path(__import__("os").environ.get("PCB_MILL_JOBS", ROOT / "web_jobs"))
@@ -112,7 +112,22 @@ async def _convert(job: Path, copper: str, side: str, edge: str, drill: str, con
 async def index(request: Request):
     inv = config_render.load_inventory()
     return templates.TemplateResponse(request=request, name="index.html", context={
-        "inv": inv, "moonraker": moonraker.available(), "fluidd": moonraker.fluidd()})
+        "inv": inv, "moonraker": moonraker.available(), "fluidd": moonraker.fluidd(),
+        "recent": _recent_jobs()})
+
+
+def _recent_jobs(limit: int = 30) -> list[dict]:
+    rows = []
+    for d in sorted((p for p in JOBS.iterdir() if p.is_dir()), reverse=True)[:limit]:
+        st = _status(d)
+        board = st.get("board") or {}
+        rows.append({
+            "id": d.name, "title": st.get("title") or d.name,
+            "created": (st.get("created") or "")[:16], "state": st.get("state", "unknown"),
+            "size": f'{board["w"]:g} × {board["h"]:g} mm' if board else "",
+            "sent": bool(st.get("sent")),
+        })
+    return rows
 
 
 @app.post("/jobs")
@@ -124,14 +139,46 @@ async def create_job(
     side: str = Form("bottom"),
     request: Request = None,
 ):
-    job = JOBS / (time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6])
-    job.mkdir(parents=True)
+    title = detect.board_name([f.filename for f in (copper, edge, drill) if f and f.filename])
+    job = _new_job_dir(title)
 
     c = _save(job, copper, "copper" + Path(copper.filename).suffix.lower())
     e = _save(job, edge, "edge" + Path(edge.filename).suffix.lower())
     d1 = _save(job, drill, "drill_pth" + Path(drill.filename).suffix.lower())
     d2 = _save(job, drill2, "drill_npth" + Path(drill2.filename).suffix.lower()) if drill2 and drill2.filename else None
+    return await _finish_create(request, job, c, e, d1, d2, side, title)
 
+
+def _new_job_dir(title: str) -> Path:
+    job = JOBS / (time.strftime("%Y%m%d-%H%M%S-") + detect.slug(title))
+    job.mkdir(parents=True)
+    return job
+
+
+@app.post("/upload")
+async def upload(request: Request, files: list[UploadFile] = File(...), side: str = Form("")):
+    """Drag-and-drop entry: any pile of KiCad outputs; roles come from the files themselves."""
+    blobs = [(f.filename, await f.read()) for f in files if f.filename]
+    try:
+        a = detect.assign(blobs, side or None)
+    except detect.DetectError as e:
+        raise HTTPException(400, str(e))
+    job = _new_job_dir(a["title"])
+
+    def put(item, stem):
+        if not item:
+            return None
+        dest = job / (stem + Path(item[0]).suffix.lower())
+        dest.write_bytes(item[1])
+        return dest
+
+    c, e = put(a["copper"], "copper"), put(a["edge"], "edge")
+    d1, d2 = put(a["drill"], "drill_pth"), put(a["drill2"], "drill_npth")
+    return await _finish_create(request, job, c, e, d1, d2, a["side"], a["title"])
+
+
+async def _finish_create(request: Request, job: Path, c: Path, e: Path, d1: Path, d2: Path | None,
+                         side: str, title: str):
     # merge PTH+NPTH if two drill files were given; report holes vs the drill bit
     if d2:
         merged = job / "drill.drl"
@@ -160,6 +207,7 @@ async def create_job(
         cfg["tools"]["drill"]["bore_tolerance"])
     (job / "status.json").write_text(json.dumps({
         "state": "queued", "side": side, "report": report,
+        "title": title, "slug": detect.slug(title),
         "files": [], "created": time.strftime("%F %T")}, indent=2))
 
     asyncio.create_task(_convert(job, str(c), side, str(e), str(drill_path), cfg_path))
@@ -282,27 +330,39 @@ def _job_ready(name: str) -> tuple[Path, dict]:
     return job, st
 
 
-def _start(job: Path, phase: str, script: str, timeout: float = 120):
-    asyncio.create_task(_run_phase(job, phase, script, timeout))
-    return RedirectResponse(f"/jobs/{job.name}", status_code=303)
-
-
-@app.post("/jobs/{name}/origin")
-async def set_origin(name: str):
-    """Save the bit's current XY as the board corner (SET_BOARD_ORIGIN, persisted)."""
-    _job_ready(name)
-    moonraker.gcode("SET_BOARD_ORIGIN")
+def _respond(request: Request, name: str):
+    """htmx request -> the refreshed job body (no page reload); plain POST -> redirect."""
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse(request=request, name="_job_body.html",
+                                          context=_job_context(request, name))
     return RedirectResponse(f"/jobs/{name}", status_code=303)
 
 
+def _start(request: Request, job: Path, phase: str, script: str, timeout: float = 120):
+    # mark it running BEFORE answering, so the very next render shows it
+    _RUNNING.add(job.name)
+    _set_status(job, phase={"name": phase, "state": "running", "script": script,
+                            "started": time.time()})
+    asyncio.create_task(_run_phase(job, phase, script, timeout))
+    return _respond(request, job.name)
+
+
+@app.post("/jobs/{name}/origin")
+async def set_origin(request: Request, name: str):
+    """Save the bit's current XY as the board corner (SET_BOARD_ORIGIN, persisted)."""
+    _job_ready(name)
+    moonraker.gcode("SET_BOARD_ORIGIN")
+    return _respond(request, name)
+
+
 @app.post("/jobs/{name}/home")
-async def home(name: str):
+async def home(request: Request, name: str):
     job, _ = _job_ready(name)
-    return _start(job, "home", "G28", timeout=180)
+    return _start(request, job, "home", "G28", timeout=180)
 
 
 @app.post("/jobs/{name}/datum")
-async def datum(name: str):
+async def datum(request: Request, name: str):
     """Find the copper under the bit (bounded 3 mm search; run again if no contact)."""
     job, _ = _job_ready(name)
     ms = _live()
@@ -312,21 +372,21 @@ async def datum(name: str):
     if plan is None:
         raise HTTPException(409, "board origin not set")
     # the macro moves to the start point first (a no-op if the bit is already there)
-    return _start(job, "datum", f"PCB_DATUM X={plan.job[0]:g} Y={plan.job[1]:g} DEPTH=3", timeout=90)
+    return _start(request, job, "datum", f"PCB_DATUM X={plan.job[0]:g} Y={plan.job[1]:g} DEPTH=3", timeout=90)
 
 
 @app.post("/jobs/{name}/start")
-async def goto_start(name: str):
+async def goto_start(request: Request, name: str):
     """Move X/Y to the probe start point (mesh corner) at the current height."""
     job, st = _job_ready(name)
     plan = _plan_for(st, _live())
     if plan is None:
         raise HTTPException(409, "board origin not set")
-    return _start(job, "start", f"PCB_TO_START X={plan.job[0]:g} Y={plan.job[1]:g}", timeout=60)
+    return _start(request, job, "start", f"PCB_TO_START X={plan.job[0]:g} Y={plan.job[1]:g}", timeout=60)
 
 
 @app.post("/jobs/{name}/mesh")
-async def mesh(name: str):
+async def mesh(request: Request, name: str):
     job, st = _job_ready(name)
     ms = _live()
     if not ms or not ms["datum_done"]:
@@ -336,24 +396,24 @@ async def mesh(name: str):
         raise HTTPException(409, "board origin not set")
     if not plan.fits:
         raise HTTPException(409, plan.problem)
-    return _start(job, "mesh", plan.gcode(), timeout=plan.seconds * 2 + 120)
+    return _start(request, job, "mesh", plan.gcode(), timeout=plan.seconds * 2 + 120)
 
 
 @app.post("/jobs/{name}/lift")
-async def lift(name: str):
+async def lift(request: Request, name: str):
     """MILL_LIFT: raise Z, return to the board origin. For getting out of trouble."""
     job, _ = _job_ready(name)
-    return _start(job, "lift", "MILL_LIFT", timeout=60)
+    return _start(request, job, "lift", "MILL_LIFT", timeout=60)
 
 
 @app.post("/jobs/{name}/estop")
-async def estop(name: str):
+async def estop(request: Request, name: str):
     moonraker.estop()
-    return RedirectResponse(f"/jobs/{name}", status_code=303)
+    return _respond(request, name)
 
 
 @app.post("/jobs/{name}/jog")
-async def jog(name: str, dz: float = Form(...)):
+async def jog(request: Request, name: str, dz: float = Form(...)):
     """Z jog. Up is a plain move; down is a bounded probe descent (stops on copper)."""
     _job_ready(name)
     if dz == 0 or abs(dz) > 10:
@@ -364,17 +424,19 @@ async def jog(name: str, dz: float = Form(...)):
         # a bounded descent that finds nothing is the normal outcome of "jog down"
         if "No trigger on probe" not in str(e):
             raise HTTPException(409, str(e))
-    return RedirectResponse(f"/jobs/{name}", status_code=303)
+    return _respond(request, name)
 
 
 # which generated file gets which header (drill/edge go below the copper -> PCB_DEEP)
-RUN_FILES = (("isolation.nc", False), ("drill.nc", True), ("edge.nc", True))
+RUN_FILES = (("isolation.nc", "isolation", False), ("drill.nc", "drill", True), ("edge.nc", "edge", True))
 
 
 @app.post("/jobs/{name}/send")
-async def send_to_machine(name: str):
-    """Upload isolation, drill and edge jobs (each with a PCB_READY header) once
-    datum + mesh are live for this board position."""
+async def send_to_machine(request: Request, name: str, extra_depth: float = Form(0.0)):
+    """Upload isolation, drill and edge jobs (each with a PCB_READY header) into
+    one Fluidd folder named after the board, once datum + mesh are live."""
+    if not 0 <= extra_depth <= 0.3:
+        raise HTTPException(400, "extra_depth must be 0..0.3 mm")
     job, st = _job_ready(name)
     ms = _live()
     plan = _plan_for(st, ms)
@@ -383,19 +445,25 @@ async def send_to_machine(name: str):
     out = job / "out"
     if not (out / "isolation.nc").exists():
         raise HTTPException(409, "isolation.nc missing (double-sided jobs are not supported yet)")
+    folder = st.get("slug") or detect.slug(name)
+    inv = config_render.load_inventory()["machine"]
     sent = []
-    for src_name, deep in RUN_FILES:
+    for src_name, op, deep in RUN_FILES:
         src = out / src_name
         if not src.exists():
             continue
-        # Klipper's virtual_sdcard only lists .gcode/.g/.gco; a .nc file is
-        # invisible to it and "Print" fails with "Unable to open file".
-        # top level of the gcodes root (no folders to hunt through in Fluidd's Jobs list);
-        # the job id prefix keeps jobs apart and the number gives the run order
-        run = out / f"{name[-6:]}_{len(sent) + 1}_{src.stem}.gcode"
-        run.write_text(probe.with_header(src.read_text(), plan.job, deep))
-        moonraker.upload(run)
+        body = probe.add_rapids(src.read_text(), inv.get("rapid_xy", probe.RAPID_XY),
+                                inv.get("rapid_z", probe.RAPID_Z))
+        if op == "isolation":
+            body = probe.deepen(body, extra_depth)       # isolation only: drill/edge depths are fixed
+        run = out / f"{len(sent) + 1}_{op}.gcode"        # Klipper only prints .gcode/.g/.gco
+        run.write_text(probe.with_header(body, plan.job, deep))
+        moonraker.upload(run, subdir=folder)
         sent.append(run.name)
-    _set_status(job, sent=sent)
+    _set_status(job, sent=sent, sent_folder=folder, extra_depth=extra_depth)
     # straight on to Fluidd's job list: that is where the cut is started
-    return RedirectResponse(f"{moonraker.fluidd()}/#/jobs", status_code=303)
+    target = f"{moonraker.fluidd()}/#/jobs"
+    if request.headers.get("HX-Request"):
+        from fastapi import Response
+        return Response(status_code=200, headers={"HX-Redirect": target})
+    return RedirectResponse(target, status_code=303)

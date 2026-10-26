@@ -12,7 +12,7 @@ tools:
     spindle_speed: 20000
     feed_rate: 250
     plunge_rate: 80
-    cut_depth: 0.07 # 2× the 35 µm copper; safe BECAUSE jobs are surface-meshed
+    cut_depth: 0.15 # below the probed surface (0.07 left copper behind)
     passes: 1
     step_over: 0.4 # 50% of the bit
     isolation_border: 0 # extra clearance beyond the copper (half a bit width)
@@ -22,7 +22,7 @@ tools:
     spindle_speed: 20000
     feed_rate: 250
     plunge_rate: 80
-    cut_depth: 0.07
+    cut_depth: 0.15
     passes: 1
     step_over: 0.4
     isolation_border: 0

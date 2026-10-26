@@ -157,3 +157,61 @@ def ready_header(region: Extents, deep: bool = False) -> str:
 
 def with_header(gcode: str, region: Extents, deep: bool = False) -> str:
     return ready_header(region, deep) + gcode
+
+
+PLUNGE_RE = re.compile(r"^(G0?1 Z)(-\d+(?:\.\d+)?)(.*)$")
+
+
+def deepen(gcode: str, extra_mm: float) -> str:
+    """Cut `extra_mm` deeper: every negative-Z plunge line (G1 Z-0.0700 F80)
+    goes further down by that much. Safe-height moves (positive Z) are untouched.
+    This is the file-level equivalent of lowering the G-code Z offset; it is done
+    here because PCB_READY refuses to start with a non-zero Z offset."""
+    if not extra_mm:
+        return gcode
+    out = []
+    for line in gcode.splitlines():
+        m = PLUNGE_RE.match(line)
+        if m:
+            line = f"{m.group(1)}{float(m.group(2)) - extra_mm:.4f}{m.group(3)}"
+        out.append(line)
+    return "\n".join(out) + ("\n" if gcode.endswith("\n") else "")
+
+
+# ---------------------------------------------------------------------------
+# Rapid feeds. Klipper has no separate G0 speed: a G0 runs at the LAST F in
+# the file, so every rapid after a drill plunge (F50) or a cut (F250) crawled.
+# ---------------------------------------------------------------------------
+RAPID_XY = 4000.0   # mm/min (~67 mm/s; max_velocity is 300 mm/s, accel does the limiting)
+RAPID_Z = 1000.0    # mm/min (max_z_velocity is 20 mm/s)
+
+_G0_RE = re.compile(r"^(G0?0)(\s.*)?$")
+_G1_RE = re.compile(r"^G0?1(\s|$)")
+_F_RE = re.compile(r"\sF-?\d")
+
+
+def add_rapids(gcode: str, xy: float = RAPID_XY, z: float = RAPID_Z) -> str:
+    """Give every G0 an explicit F, and put the cutting F back on the first G1
+    after a rapid that lacks one (so a rapid's F can never leak into a cut)."""
+    out = []
+    cut_f = None        # last F seen on a G1
+    f_now = None        # F in effect after the previous line
+    for line in gcode.splitlines():
+        s = line.strip()
+        if _G0_RE.match(s) and not _F_RE.search(" " + s):
+            axes = set(re.findall(r"\b([XYZ])-?\d", s.upper()))
+            rate = z if axes == {"Z"} else xy
+            line = f"{s} F{rate:g}"
+            f_now = rate
+        elif _G1_RE.match(s):
+            m = re.search(r"\sF(-?[\d.]+)", " " + s)
+            if m:
+                cut_f = f_now = float(m.group(1))
+            elif cut_f is not None and f_now != cut_f:
+                line = f"{s} F{cut_f:g}"
+                f_now = cut_f
+        elif _G0_RE.match(s):
+            m = re.search(r"\sF(-?[\d.]+)", " " + s)
+            f_now = float(m.group(1)) if m else f_now
+        out.append(line)
+    return "\n".join(out) + ("\n" if gcode.endswith("\n") else "")

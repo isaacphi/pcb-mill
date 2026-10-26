@@ -1,14 +1,16 @@
+{# Job body: rendered on first paint, re-rendered by htmx after each action and every 2 s. #}
+{% macro act(path, label, cls="", confirm=None) -%}
+<form hx-post="/jobs/{{ name }}/{{ path }}" hx-target="#job-body" hx-swap="innerHTML" hx-disabled-elt="find button"
+      {% if confirm %}hx-confirm="{{ confirm }}"{% endif %}><button class="{{ cls }}">{{ label }}</button></form>
+{%- endmacro %}
+
 {% macro jog(up_only=False) %}
-<form method="post" action="/jobs/{{ name }}/jog" class="jog">
-  <span class="dim">Z jog (mm):</span>
-  {% if not up_only %}
-  {% for d in [5, 1, 0.2, 0.05] %}<button name="dz" value="-{{ d }}" class="secondary" title="down {{ d }} mm (stops on copper)">▼ {{ d }}</button>{% endfor %}
-  {% endif %}
+<form hx-post="/jobs/{{ name }}/jog" hx-target="#job-body" hx-swap="innerHTML" class="jog">
+  <span class="dim">Z mm</span>
+  {% if not up_only %}{% for d in [5, 1, 0.2, 0.05] %}<button name="dz" value="-{{ d }}" class="secondary" title="stops on copper">▼ {{ d }}</button>{% endfor %}{% endif %}
   {% for d in [0.05, 0.2, 1, 5] %}<button name="dz" value="{{ d }}" class="secondary">▲ {{ d }}</button>{% endfor %}
-  <span class="dim">bit Z label {{ "%.2f"|format(ms.position[2]) }}</span>
 </form>
 {% endmacro %}
-{# Dynamic body of the job page — rendered inline on first paint and polled via htmx. #}
 
 {% if st.state == "done" %}
 <ol class="steps">
@@ -17,27 +19,21 @@
   <li class="{{ 'done' if steps and steps.datum else ('current' if steps and steps.homed else 'todo') }}">Find copper</li>
   <li class="{{ 'done' if steps and steps.mesh else ('current' if steps and steps.datum else 'todo') }}">Mesh</li>
   <li class="{{ 'done' if st.sent else ('current' if steps and steps.mesh else 'todo') }}">Send</li>
-  <li class="{{ 'current' if st.sent else 'todo' }}">Cut in Fluidd</li>
+  <li class="{{ 'current' if st.sent else 'todo' }}">Cut</li>
 </ol>
 {% endif %}
 
 {% if st.error %}<p class="err">{{ st.error }}</p>{% endif %}
 
 {% if st.state in ["queued", "converting"] %}
-<div class="processing">
-  <div class="spinner"></div>
-  <div>
-    <p><b>Converting…</b>{% if elapsed is not none %} {{ elapsed // 60 }}:{{ "%02d"|format(elapsed % 60) }} elapsed{% endif %}</p>
-    <p class="dim">Parsing drills → rendering gerbers → tracing contours → writing G-code.
-    This takes a couple of minutes on a fast machine, ~5–15 min on the Pi.</p>
-  </div>
-</div>
+<div class="processing"><div class="spinner"></div>
+  <div><b>Converting…</b>{% if elapsed is not none %} {{ elapsed // 60 }}:{{ "%02d"|format(elapsed % 60) }}{% endif %}
+    <span class="dim"> (about 5–15 min on the Pi)</span></div></div>
 {% endif %}
 
 {% if st.report %}
-<h2>Holes (vs drill bit)</h2>
 <table>
-  <tr><th>diameter</th><th>count</th><th>machining</th></tr>
+  <tr><th>hole</th><th>count</th><th>machined as</th></tr>
   {% for r in st.report %}
   <tr><td>{{ "%.2f"|format(r.diameter) }} mm</td><td>{{ r.count }}</td><td>{{ r.method }}</td></tr>
   {% endfor %}
@@ -45,111 +41,82 @@
 {% endif %}
 
 {% if st.state == "done" %}
-  {% if st.toolpaths %}
-<h2>Toolpaths</h2>
-<img class="preview" src="/jobs/{{ name }}/files/{{ st.toolpaths }}" alt="toolpaths">
-  {% endif %}
+  {% if st.toolpaths %}<img class="preview" src="/jobs/{{ name }}/files/{{ st.toolpaths }}" alt="toolpaths">{% endif %}
 
   {% if moonraker_control %}
 <h2>Machine</h2>
-{% if st.board %}<p>Cut area: <b>{{ st.board.w }} × {{ st.board.h }} mm</b>
-  (pocket 100 × 100) — mesh points ≤ 10&nbsp;mm apart, only inside 5…95&nbsp;mm.</p>{% endif %}
-
 {% if not ms %}
-<p class="err">Klipper is not reachable — is the printer in an error state? (Fluidd → FIRMWARE_RESTART)</p>
+<p class="err">Klipper not reachable. Check Fluidd (FIRMWARE_RESTART if it's in error).</p>
 {% else %}
-<p class="dim">Board origin (saved, machine): {% if ms.origin %}X{{ "%.1f"|format(ms.origin[0]) }} Y{{ "%.1f"|format(ms.origin[1]) }}{% else %}<b>not set</b>{% endif %}
-  · bit at X{{ "%.1f"|format(ms.position[0]) }} Y{{ "%.1f"|format(ms.position[1]) }}
-  · homed: {{ ms.homed or "no" }}</p>
+<p class="dim">{{ st.board.w }} × {{ st.board.h }} mm
+  · origin {% if ms.origin %}X{{ "%.1f"|format(ms.origin[0]) }} Y{{ "%.1f"|format(ms.origin[1]) }}{% else %}<b>not set</b>{% endif %}
+  · bit X{{ "%.1f"|format(ms.position[0]) }} Y{{ "%.1f"|format(ms.position[1]) }}
+  · homed {{ ms.homed or "no" }}</p>
 
 {% if phase and phase.state == "running" %}
-<div class="processing">
-  <div class="spinner"></div>
-  <div>
-    <p><b>Running {{ phase.name }}…</b> <code>{{ phase.script }}</code></p>
-    <p class="dim">The machine is moving. Hand on the power switch (or the Fluidd e-stop).</p>
-  </div>
-</div>
-<form method="post" action="/jobs/{{ name }}/estop"><button class="danger">EMERGENCY STOP</button></form>
+<div class="processing"><div class="spinner"></div>
+  <div><b>{{ phase.name }}</b> <code>{{ phase.script }}</code></div></div>
+{{ act("estop", "EMERGENCY STOP", "danger") }}
 {% else %}
   {% if phase and phase.state == "error" %}
 <p class="err">{{ phase.name }} failed: {{ phase.error }}</p>
-<form method="post" action="/jobs/{{ name }}/lift"><button>Lift the bit (MILL_LIFT)</button></form>
+{{ act("lift", "Lift the bit") }}
   {% endif %}
 
   {% if not steps.origin %}
-<p>No board origin saved yet. In <a href="{{ fluidd }}" target="_blank">Fluidd</a>: <code>G28</code>, jog the bit over the board's
-bottom-left corner, then:</p>
-<form method="post" action="/jobs/{{ name }}/origin"><button>Save board origin at bit position</button></form>
+<p>No board origin. In <a href="{{ fluidd }}" target="_blank">Fluidd</a> home, jog to the pocket's bottom-left corner, then:</p>
+{{ act("origin", "Save origin at bit position") }}
   {% elif not steps.homed %}
-<ol class="setup">
-  <li>Clamp the board in the pocket, milling bit installed, <b>spindle OFF</b></li>
-  <li>Clip the probe leads: one on the bit shank, one on the copper</li>
-</ol>
-<form method="post" action="/jobs/{{ name }}/home"><button>Home (G28) — goes to the saved board corner</button></form>
+<p>Board clamped, spindle off, probe clips on (bit + copper).</p>
+{{ act("home", "Home") }}
   {% elif not steps.datum %}
     {% if plan and not steps.at_start %}
-<ol class="setup">
-  <li>Probe clips on (bit shank + copper)</li>
-  <li>The bit is still high after homing. Move it over the probe start point first: job X{{ "%g"|format(plan.job[0]) }}, Y{{ "%g"|format(plan.job[1]) }}</li>
-</ol>
-<form method="post" action="/jobs/{{ name }}/start"><button>Go to probe start (X{{ "%g"|format(plan.job[0]) }} Y{{ "%g"|format(plan.job[1]) }})</button></form>
+<p>Move over the probe start point while the bit is still high.</p>
+{{ act("start", "Go to probe start (%g, %g)"|format(plan.job[0], plan.job[1])) }}
     {% else %}
-<ol class="setup">
-  <li>Jog Z down until the bit is about <b>2 mm above the copper</b> — the downward jog stops by itself if the bit touches copper</li>
-  <li>Then Find the copper: a 3 mm search from here</li>
-</ol>
+<p>Jog down to about 2 mm above the copper. Jogging down stops on contact.</p>
 {{ jog() }}
-<form method="post" action="/jobs/{{ name }}/datum"><button>Find the copper (3 mm search)</button></form>
-<p class="dim">"No trigger" means the bit is still above the copper — lower it a little and run again.
-  The bit is at job X{{ "%.1f"|format(ms.position[0] - ms.origin[0]) }} Y{{ "%.1f"|format(ms.position[1] - ms.origin[1]) }}.</p>
+{{ act("datum", "Find the copper") }}
+<p class="dim">"No trigger" = still above the copper; lower and repeat.</p>
     {% endif %}
   {% elif not steps.mesh %}
     {% if plan and plan.fits %}
-<p>Mesh: <b>{{ plan.nx }} × {{ plan.ny }}</b> points over machine
-  X{{ "%.1f"|format(plan.x0) }}–{{ "%.1f"|format(plan.x1) }}, Y{{ "%.1f"|format(plan.y0) }}–{{ "%.1f"|format(plan.y1) }}
-  — about {{ plan.seconds // 60 }}&nbsp;min. The bit moves 2&nbsp;mm above the copper between points and probes down at each.</p>
-<form method="post" action="/jobs/{{ name }}/mesh"><button>Probe &amp; mesh</button></form>
+<p>{{ plan.nx }} × {{ plan.ny }} points, about {{ plan.seconds // 60 }} min.</p>
+{{ act("mesh", "Probe & mesh") }}
     {% else %}
 <p class="err">{{ plan.problem if plan else "Board origin not set." }}</p>
     {% endif %}
   {% else %}
 {{ jog(up_only=True) }}
-<p class="ok">Mesh ready: surface {{ "%.3f"|format(ms.mesh.lo) }} … {{ "%.3f"|format(ms.mesh.hi) }} mm
-  (spread {{ "%.3f"|format(ms.mesh.hi - ms.mesh.lo) }} mm). Z0 is the copper surface.</p>
+<p class="ok">Mesh ready: {{ "%.3f"|format(ms.mesh.lo) }} … {{ "%.3f"|format(ms.mesh.hi) }} mm
+  (spread {{ "%.3f"|format(ms.mesh.hi - ms.mesh.lo) }})</p>
 <table class="mesh">
       {% for row in ms.mesh.matrix|reverse %}
   <tr>{% for z in row %}<td>{{ "%+.3f"|format(z) }}</td>{% endfor %}</tr>
       {% endfor %}
 </table>
-<p class="dim">Top row = highest Y. A tilt is fine — the cut follows it.</p>
-    {% if not st.sent %}
-<p><b>Remove both probe clips</b> before cutting.</p>
-<form method="post" action="/jobs/{{ name }}/send"><button>Send job &amp; open Fluidd</button></form>
+<p><b>Probe clips off.</b></p>
+<form hx-post="/jobs/{{ name }}/send" hx-target="#job-body" hx-swap="innerHTML">
+  <label>Extra isolation depth <input type="number" name="extra_depth" value="{{ st.extra_depth or 0 }}" min="0" max="0.3" step="0.01" style="width:5em"> mm</label>
+  <button>{{ "Send again" if st.sent else "Send & open Fluidd" }}</button>
+</form>
     {% endif %}
   {% endif %}
 {% endif %}
-{% endif %}
-{% endif %}
-
-<h2>Files</h2>
-<ul>
-  {% for f in st.files %}
-  <li><a href="/jobs/{{ name }}/files/out/{{ f }}">{{ f }}</a></li>
-  {% endfor %}
-</ul>
-  {% if st.sent %}
-<p class="ok">Sent to <a href="{{ fluidd }}/#/jobs" target="_blank"><b>Fluidd → Jobs</b></a> (top of the list). Run them in this order, watching each:</p>
-<ol>{% for f in st.sent %}<li><code>{{ f }}</code></li>{% endfor %}</ol>
-<p class="dim">Every file starts with <code>PCB_READY</code>, which refuses to run without a live datum and mesh for this board position. Drill and edge files also open room below the copper (<code>PCB_DEEP</code>). Don't run <code>G28</code> or move the board between files.</p>
-  {% elif not moonraker %}
-<p class="dim">Download the .nc files and upload them in Fluidd.</p>
   {% endif %}
+
+  {% if st.sent %}
+<p class="ok">In <a href="{{ fluidd }}/#/jobs" target="_blank">Fluidd → Jobs → {{ st.sent_folder }}</a>. Run in order:</p>
+<ol>{% for f in st.sent %}<li><code>{{ f }}</code></li>{% endfor %}</ol>
+<p class="dim">Don't home or move the board between files.</p>
+  {% endif %}
+
+<details>
+  <summary>Generated files</summary>
+  <ul>{% for f in st.files %}<li><a href="/jobs/{{ name }}/files/out/{{ f }}">{{ f }}</a></li>{% endfor %}</ul>
+</details>
 {% endif %}
 
 {% if log %}
-<details class="log">
-  <summary>Conversion log</summary>
-  <pre>{{ log }}</pre>
-</details>
+<details class="log"><summary>Log</summary><pre>{{ log }}</pre></details>
 {% endif %}

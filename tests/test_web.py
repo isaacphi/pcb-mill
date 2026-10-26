@@ -210,7 +210,7 @@ def test_processing_page():
     client = TestClient(webapp.app)
     r = client.get(f"/jobs/{job.name}")
     assert r.status_code == 200
-    assert "spinner" in r.text and "Converting" in r.text and "elapsed" in r.text
+    assert "spinner" in r.text and "Converting" in r.text
 
 
 # ---------- probe geometry ----------
@@ -322,13 +322,13 @@ def test_steps_follow_live_klipper_state(tmp_path, monkeypatch):
     _fake_machine(monkeypatch, tmp_path, homed="")
     job = _job("wf-1")
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Home (G28)" in r.text and "Find the copper" not in r.text
+    assert ">Home</button>" in r.text and "Find the copper" not in r.text
     _fake_machine(monkeypatch, tmp_path, datum_done=False)          # still at the corner, high
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Go to probe start (X5 Y5)" in r.text and "Find the copper" not in r.text
+    assert "Go to probe start (5, 5)" in r.text and "Find the copper" not in r.text
     _fake_machine(monkeypatch, tmp_path, datum_done=False, position=[30.4, 32.5, 12.0])
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Find the copper" in r.text and "Probe &amp; mesh" not in r.text and "Z jog" in r.text
+    assert "Find the copper" in r.text and "Probe &amp; mesh" not in r.text and "▼ 1" in r.text
     _fake_machine(monkeypatch, tmp_path, datum_done=True)
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
     assert "Probe &amp; mesh" in r.text and "10 × 10" in r.text
@@ -388,12 +388,12 @@ def test_send_requires_mesh_covering_job(tmp_path, monkeypatch):
     r = TestClient(webapp.app).post(f"/jobs/{job.name}/send", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"].endswith(":8080/#/jobs")        # straight on to Fluidd
-    d = tmp_path / "gcodes"; k = job.name[-6:]
-    iso = (d / f"{k}_1_isolation.gcode").read_text()
+    d = tmp_path / "gcodes" / "wf-5"
+    iso = (d / "1_isolation.gcode").read_text()
     assert iso.startswith(f"PCB_READY X0={plan.job[0]:.3f}") and "PCB_DEEP" not in iso
-    assert sorted(f.suffix for f in d.iterdir() if f.is_file()) == [".gcode"] * 3   # Klipper only prints .gcode/.g/.gco
-    assert (d / f"{k}_2_drill.gcode").read_text().splitlines()[1] == "PCB_DEEP"
-    assert (d / f"{k}_3_edge.gcode").read_text().splitlines()[1] == "PCB_DEEP"
+    assert sorted(f.suffix for f in d.iterdir() if f.is_file()) == [".gcode"] * 3     # Klipper only prints .gcode/.g/.gco   # Klipper only prints .gcode/.g/.gco
+    assert (d / "2_drill.gcode").read_text().splitlines()[1] == "PCB_DEEP"
+    assert (d / "3_edge.gcode").read_text().splitlines()[1] == "PCB_DEEP"
 
 
 def test_klipper_rounded_mesh_bounds_still_count_as_covering(tmp_path, monkeypatch):
@@ -405,7 +405,7 @@ def test_klipper_rounded_mesh_bounds_still_count_as_covering(tmp_path, monkeypat
     ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1 - 0.018, plan.y1],
                       matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Send job &amp; open Fluidd" in r.text
+    assert "Send &amp; open Fluidd" in r.text
 
 
 def test_send_refuses_mesh_that_is_too_small(tmp_path, monkeypatch):
@@ -420,7 +420,7 @@ def test_oversize_job_is_rejected_page(tmp_path, monkeypatch):
     _fake_machine(monkeypatch, tmp_path)
     job = _job("wf-7", state="rejected", error="cut area is 102.0 × 50.0 mm; the limit is 100 × 100 mm")
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert r.status_code == 200 and "limit is 100" in r.text and "Home (G28)" not in r.text
+    assert r.status_code == 200 and "limit is 100" in r.text and ">Home</button>" not in r.text
 
 
 def test_index_has_collapsed_advanced():
@@ -428,4 +428,127 @@ def test_index_has_collapsed_advanced():
     r = client.get("/")
     assert r.status_code == 200
     assert "<details>" in r.text and "Cutting parameters" in r.text
-    assert "0.07" in r.text  # shallow mesh-based isolation depth shown
+    assert "0.15" in r.text  # isolation depth default shown
+
+
+def test_deepen_only_touches_negative_plunges():
+    g = "G0 Z1.0\nG1 Z-0.0700 F80\nG1 X1 Y2 F250\nG0 Z1.0\nG1 Z-0.0700 F80\n"
+    out = probe.deepen(g, 0.05)
+    assert out.count("G1 Z-0.1200 F80") == 2 and out.count("G0 Z1.0") == 2
+    assert "G1 X1 Y2 F250" in out and out.endswith("\n")
+    assert probe.deepen(g, 0) == g
+
+
+def test_send_applies_extra_depth_to_isolation_only(tmp_path, monkeypatch):
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job("wf-10")
+    for n in ("isolation", "drill", "edge"):
+        (job / "out" / f"{n}.nc").write_text("G0 Z1.0\nG1 Z-0.0700 F80\nM5\n")
+    plan = probe.mesh_plan((0.8, 0.8, 90.0, 88.0), (25.4, 27.5))
+    ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
+                      matrix=[[0.0]], lo=0.0, hi=0.0)
+    c = TestClient(webapp.app)
+    assert c.post(f"/jobs/{job.name}/send", data={"extra_depth": "0.5"}).status_code == 400
+    r = c.post(f"/jobs/{job.name}/send", data={"extra_depth": "0.05"}, follow_redirects=False)
+    assert r.status_code == 303
+    d = tmp_path / "gcodes" / "wf-10"
+    assert "Z-0.1200" in (d / "1_isolation.gcode").read_text()
+    assert "Z-0.0700" in (d / "2_drill.gcode").read_text()      # untouched
+
+
+def test_rapids_get_explicit_feed_and_never_leak_into_cuts():
+    g = "G21\nG0 Z1.0\nG0 X1 Y2 Z1.0\nG1 Z-0.12 F80\nG1 X3 Y3 F250\nG1 X4 Y4\nG0 Z1.0\nG1 X5 Y5\nG0 X0 Y0 F900\nM5\n"
+    out = probe.add_rapids(g, xy=4000, z=1000).splitlines()
+    assert "G0 Z1.0 F1000" in out and "G0 X1 Y2 Z1.0 F4000" in out
+    assert "G0 X0 Y0 F900" in out                          # explicit F kept
+    assert "G1 X4 Y4" in out                               # already inherits the cutting F
+    assert "G1 X5 Y5 F250" in out                          # F restored after a rapid
+
+
+def test_send_adds_rapid_feeds(tmp_path, monkeypatch):
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job("wf-11")
+    (job / "out" / "drill.nc").write_text("G0 X1 Y1\nG1 Z-1.9 F50\nG0 Z1.0\nG0 X2 Y2\n")
+    plan = probe.mesh_plan((0.8, 0.8, 90.0, 88.0), (25.4, 27.5))
+    ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
+                      matrix=[[0.0]], lo=0.0, hi=0.0)
+    assert TestClient(webapp.app).post(f"/jobs/{job.name}/send", follow_redirects=False).status_code == 303
+    text = (tmp_path / "gcodes" / "wf-11" / "2_drill.gcode").read_text()
+    assert "G0 X2 Y2 F4000" in text and "G0 Z1.0 F1000" in text
+
+
+def test_htmx_actions_return_the_fragment_not_a_redirect(tmp_path, monkeypatch):
+    _, sent = _fake_machine(monkeypatch, tmp_path, datum_done=False, position=[30.4, 32.5, 12.0])
+    job = _job("wf-12")
+    with TestClient(webapp.app) as c:
+        r = c.post(f"/jobs/{job.name}/datum", headers={"HX-Request": "true"}, follow_redirects=False)
+        assert r.status_code == 200 and "<html>" not in r.text and "steps" in r.text
+        assert "datum" in r.text                          # already shows the running step
+        time.sleep(0.5)
+
+
+def test_send_via_htmx_redirects_the_browser_to_fluidd(tmp_path, monkeypatch):
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job("wf-13")
+    plan = probe.mesh_plan((0.8, 0.8, 90.0, 88.0), (25.4, 27.5))
+    ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
+                      matrix=[[0.0]], lo=0.0, hi=0.0)
+    r = TestClient(webapp.app).post(f"/jobs/{job.name}/send", headers={"HX-Request": "true"})
+    assert r.status_code == 200 and r.headers["HX-Redirect"].endswith("/#/jobs")
+
+
+# ------------------------------------------------------------ upload detection
+from web import detect  # noqa: E402
+
+BOARD = Path(__file__).resolve().parent.parent / "board"
+
+
+def _board_files():
+    return [(p.name, p.read_bytes()) for p in sorted(BOARD.iterdir())]
+
+
+def test_detect_kicad_files_by_content():
+    a = detect.assign(_board_files())
+    assert a["side"] == "top" and a["title"] == "AQI esp32 pcb"
+    assert a["copper"][0].endswith("F_Cu.gbr") and a["edge"][0].endswith("Edge_Cuts.gbr")
+    assert a["drill"][0].endswith("-PTH.drl") and a["drill2"][0].endswith("-NPTH.drl")
+    assert a["roles"]["AQI esp32 pcb-job.gbrjob"] == detect.IGNORE
+
+
+def test_detect_survives_renamed_files():
+    files = [(f"mystery{i}.bin", d) for i, (_, d) in enumerate(_board_files())]
+    a = detect.assign(files)
+    assert a["side"] == "top" and a["drill2"] is not None      # X2 attributes, not names
+
+
+def test_detect_falls_back_to_names_and_reports_what_is_missing():
+    files = [("b-B_Cu.gbr", b"G04*"), ("b-Edge_Cuts.gbr", b"G04*"), ("b-PTH.drl", b"M48")]
+    a = detect.assign(files)
+    assert a["side"] == "bottom"
+    with pytest.raises(detect.DetectError, match="outline"):
+        detect.assign([f for f in files if "Edge" not in f[0]])
+    with pytest.raises(detect.DetectError, match="copper"):
+        detect.assign([("x.txt", b"hi")])
+
+
+def test_detect_two_copper_layers_uses_requested_side():
+    files = _board_files() + [("AQI esp32 pcb-B_Cu.gbr", b"%TF.FileFunction,Copper,L2,Bot*%\nG04*")]
+    assert detect.assign(files)["side"] == "bottom"
+    assert detect.assign(files, "top")["side"] == "top"
+
+
+def test_upload_endpoint_creates_a_named_job(monkeypatch):
+    started = []
+
+    async def fake_convert(*a, **k):
+        started.append(a)
+    monkeypatch.setattr(webapp, "_convert", fake_convert)
+    with TestClient(webapp.app) as c:
+        r = c.post("/upload", files=[("files", (n, d)) for n, d in _board_files()], follow_redirects=False)
+        assert r.status_code == 303
+        name = r.headers["location"].rsplit("/", 1)[1]
+        assert name.endswith("AQI-esp32-pcb")
+        st = json.loads((Path(os.environ["PCB_MILL_JOBS"]) / name / "status.json").read_text())
+        assert st["title"] == "AQI esp32 pcb" and st["slug"] == "AQI-esp32-pcb" and st["side"] == "top"
+        assert c.post("/upload", files=[("files", ("x.txt", b"nope"))]).status_code == 400
+        assert "AQI esp32 pcb" in c.get("/").text                # listed on the home page

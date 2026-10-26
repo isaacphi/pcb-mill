@@ -6,6 +6,8 @@
 machine:
   safe_height: 1.0
   dpi: 1500
+  rapid_xy: 4000   # mm/min for G0 (Klipper runs G0 at the last F otherwise)
+  rapid_z: 1000
 
 tools:
   - id: em08
@@ -22,7 +24,7 @@ operations:
     tool: em08
     feed_rate: 250
     plunge_rate: 80
-    cut_depth: 0.07 # shallow - relies on per-job surface mesh (PCB_MESH)
+    cut_depth: 0.15 # below the mesh surface; 0.07 left copper behind
     passes: 1
     step_over: 0.4
     isolation_border: 0

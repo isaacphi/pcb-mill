@@ -7,49 +7,80 @@
 </head>
 <body>
 <h1>pcb-mill</h1>
-<p class="dim">Gerber → G-code, then surface-meshed milling. The job page walks you through
-  origin + probe; milling runs in <a href="{{ fluidd }}" target="_blank">Fluidd</a>.
-  {% if not moonraker %}<br>Push to machine: <b>disabled</b> (no gcodes dir / MOONRAKER_URL) — files are download-only.{% endif %}</p>
 
-<form method="post" action="/jobs" enctype="multipart/form-data">
-<fieldset>
-  <legend>Board files</legend>
-  <label>Copper layer <span class="dim">(F_Cu / B_Cu .gbr)</span><br>
-    <input type="file" name="copper" required></label>
-  <label>Board outline <span class="dim">(Edge_Cuts .gbr)</span><br>
-    <input type="file" name="edge" required></label>
-  <label>Drills — plated <span class="dim">(.drl)</span><br>
-    <input type="file" name="drill" required></label>
-  <label>Drills — non-plated <span class="dim">(.drl, optional, merged)</span><br>
-    <input type="file" name="drill2"></label>
-  <label>Copper side<br>
-    <select name="side">
-      <option value="bottom" selected>bottom (output mirrored)</option>
-      <option value="top">top</option>
-    </select></label>
-</fieldset>
+<form id="up" method="post" action="/upload" enctype="multipart/form-data">
+  <div id="drop">
+    <b>Drop the KiCad gerbers and drill files here</b>
+    <span class="dim">or <label class="link">choose files<input id="pick" type="file" name="files" multiple hidden></label></span>
+    <ul id="found"></ul>
+    <label id="sideRow" hidden>Copper side
+      <select name="side"><option value="bottom">bottom</option><option value="top">top</option></select></label>
+    <p id="err" class="err"></p>
+  </div>
 
-<details>
-  <summary>Cutting parameters <span class="dim">— defaults are tuned; isolation depth 0.07&nbsp;mm relies on the per-job surface mesh</span></summary>
-  {% for op in ["isolation", "drill", "edge"] %}
-  <fieldset>
-    <legend>{{ op }}</legend>
-    <label>Tool <select name="tool.{{ op }}">
-      {% for t in inv.tools %}
-      <option value="{{ t.id }}" {% if op in t.default_for %}selected{% endif %}>
-        {{ t.name }}</option>
-      {% endfor %}
-    </select></label>
-    {% for key, val in inv.operations[op].items() %}
-      {% if key != "tool" %}
-    <label>{{ key }} <input name="{{ op }}.{{ key }}" value="{{ val }}" size="7"></label>
-      {% endif %}
+  <details>
+    <summary>Cutting parameters</summary>
+    {% for op in ["isolation", "drill", "edge"] %}
+    <fieldset>
+      <legend>{{ op }}</legend>
+      <label>Tool <select name="tool.{{ op }}">
+        {% for t in inv.tools %}<option value="{{ t.id }}" {% if op in t.default_for %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+      </select></label>
+      {% for key, val in inv.operations[op].items() %}{% if key != "tool" %}
+      <label>{{ key }} <input name="{{ op }}.{{ key }}" value="{{ val }}" size="7"></label>
+      {% endif %}{% endfor %}
+    </fieldset>
     {% endfor %}
-  </fieldset>
-  {% endfor %}
-</details>
+  </details>
 
-<button type="submit">Convert →</button>
+  <button id="go" type="submit" disabled>Convert</button>
 </form>
+
+<h2>Jobs</h2>
+{% if recent %}
+<table class="jobs">
+  {% for j in recent %}
+  <tr><td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td><td>{{ j.size }}</td><td>{{ j.created }}</td>
+      <td>{{ j.state }}{% if j.sent %} · sent{% endif %}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="dim">None yet.</p>{% endif %}
+
+<script>
+const NAMES = [[/-edge_cuts\.|\.gm1$|\.gko$/i, "outline"], [/-f_cu\.|\.gtl$/i, "top copper"], [/-b_cu\.|\.gbl$/i, "bottom copper"],
+               [/-npth\./i, "drills (non-plated)"], [/-pth\./i, "drills (plated)"], [/\.(drl|xln)$/i, "drills"]];
+const pick = document.getElementById("pick"), drop = document.getElementById("drop");
+const found = document.getElementById("found"), go = document.getElementById("go");
+const guess = n => (NAMES.find(([rx]) => rx.test(n)) || [0, null])[1];
+
+function show() {
+  const roles = [...pick.files].map(f => [f.name, guess(f.name)]);
+  found.innerHTML = roles.map(([n, r]) => `<li class="${r ? "ok" : "dim"}">${n} <span class="dim">${r || "ignored"}</span></li>`).join("");
+  const has = k => roles.some(([, r]) => r && r.includes(k));
+  document.getElementById("sideRow").hidden = !(has("top copper") && has("bottom copper"));
+  go.disabled = !(has("copper") && has("outline") && has("drills"));
+  document.getElementById("err").textContent = "";
+}
+pick.addEventListener("change", show);
+["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, () => drop.classList.remove("over")));
+drop.addEventListener("drop", e => {
+  e.preventDefault();
+  const dt = new DataTransfer();
+  [...pick.files, ...e.dataTransfer.files].forEach(f => dt.items.add(f));
+  pick.files = dt.files;
+  show();
+});
+document.getElementById("up").addEventListener("submit", async e => {
+  e.preventDefault();
+  go.disabled = true;
+  const r = await fetch("/upload", {method: "POST", body: new FormData(e.target)});
+  if (r.redirected) { location = r.url; return; }
+  let msg = await r.text();
+  try { msg = JSON.parse(msg).detail; } catch (_) {}
+  document.getElementById("err").textContent = msg;
+  go.disabled = false;
+});
+</script>
 </body>
 </html>
