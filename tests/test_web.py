@@ -118,7 +118,7 @@ def _wait_done(job: Path, timeout=300):
     deadline = time.time() + timeout
     while time.time() < deadline:
         st = json.loads((job / "status.json").read_text())
-        if st["state"] in ("done", "error"):
+        if st["state"] in ("done", "error", "rejected"):
             return st
         time.sleep(1)
     pytest.fail("conversion did not finish in time")
@@ -134,7 +134,10 @@ def test_convert_sample_board_direct(tmp_path):
     asyncio.run(webapp._convert(tmp_path, str(SAMPLE["copper"]), "top",
                                 str(SAMPLE["edge"]), str(SAMPLE["drill"]), cfg_path))
     st = json.loads((tmp_path / "status.json").read_text())
-    assert st["state"] == "done", (tmp_path / "log.txt").read_text()[-2000:]
+    # the sample ESP32 board is ~70 x 100 mm: converts fine but exceeds the 97 mm cut limit
+    assert st["state"] == "rejected", (tmp_path / "log.txt").read_text()[-2000:]
+    assert "97" in st["error"]
+    assert st["extents"] and st["extents"][3] > 97
     assert "onesided.nc" in st["files"]
     assert st["mirror_x"] > 0
     assert (tmp_path / "out" / "toolpaths.png").exists()
@@ -155,14 +158,14 @@ def test_http_job_flow():
     assert r.status_code == 303
     name = r.headers["location"].rsplit("/", 1)[1]
     st = _wait_done(Path(os.environ["PCB_MILL_JOBS"]) / name)
-    assert st["state"] == "done"
+    assert st["state"] == "rejected" and "97" in st["error"]   # sample board is ~70 x 100 mm
     assert st["report"]            # hole report was computed at upload
     # override made it into the job config
     import yaml
     cfg = yaml.safe_load((Path(os.environ["PCB_MILL_JOBS"]) / name / "mill_config.yaml").read_text())
     assert cfg["tools"]["isolation"]["feed_rate"] == 240
     r = client.get(f"/jobs/{name}")
-    assert r.status_code == 200 and "toolpaths" in r.text
+    assert r.status_code == 200 and "limit is 97" in r.text
 
 
 def test_processing_page():
@@ -202,54 +205,142 @@ def test_extents_ignores_non_moves(tmp_path):
     assert probe.extents_from_gcode([nc]) == (5.0, 5.0, 5.0, 5.0)
 
 
-def test_mesh_params_spacing_and_margin():
-    # 70x100 board: ~8 x ~11 points at 10mm spacing, shrunk by the margin
-    x0, y0, x1, y1, nx, ny = probe.mesh_params((0.0, 0.0, 70.0, 100.0))
-    assert (x0, y0, x1, y1) == (1.5, 1.5, 68.5, 98.5)
-    assert nx == 8 and ny == 11
+def test_validate_job_limits():
+    ok = (0.8, 0.8, 90.0, 95.0)
+    assert probe.validate_job(ok, (0.0, 0.0, 99.0, 100.0)) is None
+    assert "97" in probe.validate_job((0.0, 0.0, 98.0, 50.0))
+    assert "97" in probe.validate_job((0.0, 0.0, 50.0, 97.5))
+    assert "outline" in probe.validate_job(ok, (0.0, 0.0, 101.5, 90.0))
+    assert probe.validate_job(None)
 
 
-def test_mesh_params_clamps_tiny_board():
-    x0, y0, x1, y1, nx, ny = probe.mesh_params((0.0, 0.0, 12.0, 8.0))
-    assert nx == 2 and ny == 2
-    assert (x0, y0, x1, y1) == (1.5, 1.5, 10.5, 6.5)
+def test_mesh_plan_spacing_margin_and_origin():
+    # 94x88 cut at origin (26, 30): region shrinks 1.5 mm, shifts by origin
+    p = probe.mesh_plan((0.8, 0.8, 94.0, 88.0), (26.0, 30.0))
+    assert (p.x0, p.y0, p.x1, p.y1) == (28.3, 32.3, 118.5, 116.5)
+    assert p.nx == 11 and p.ny == 10          # <= 10 mm apart
+    assert (p.x1 - p.x0) / (p.nx - 1) <= 10 and (p.y1 - p.y0) / (p.ny - 1) <= 10
+    assert p.fits and p.problem is None
+    assert p.gcode().startswith("PCB_MESH X0=28.300 Y0=32.300 X1=118.500 Y1=116.500 PTSX=11 PTSY=10")
 
 
-def test_mesh_params_rejects_sliver():
+def test_mesh_plan_flags_travel_overrun():
+    p = probe.mesh_plan((0.8, 0.8, 97.0, 90.0), (26.0, 30.0))   # x1 = 121.5 > 119
+    assert not p.fits and "X travel" in p.problem and "origin" in p.problem
+
+
+def test_mesh_plan_min_points_and_tiny_board():
+    p = probe.mesh_plan((0.0, 0.0, 12.0, 8.0), (10.0, 10.0))
+    assert p.nx >= 4 and p.ny >= 4          # bicubic needs >= 4 per axis
     with pytest.raises(ValueError):
-        probe.mesh_params((0.0, 0.0, 2.0, 100.0))
+        probe.mesh_plan((0.0, 0.0, 2.0, 100.0), (0.0, 0.0))
 
 
-def test_job_page_shows_probe_section(tmp_path, monkeypatch):
-    """A done job with extents renders the probe/origin setup block."""
-    monkeypatch.setenv("GCODE_DIR", str(tmp_path))  # simulate running on the Pi
+def test_with_header_puts_ready_check_before_spindle():
+    out = probe.with_header("G21\nM3 S20000\n", (0.77, 0.77, 90.0, 88.0))
+    lines = out.splitlines()
+    assert lines[0] == "PCB_READY X0=0.770 Y0=0.770 X1=90.000 Y1=88.000"
+    assert lines.index("M3 S20000") > 0
+
+
+# ------------------------------------------------ workflow routes (Klipper faked)
+
+def _fake_machine(monkeypatch, tmp_path, **over):
+    ms = {"klipper": "ready", "homed": "xyz", "position": [26.0, 30.0, 25.0],
+          "origin": (26.0, 30.0), "datum_done": False,
+          "mesh": {"profile": "", "min": None, "max": None, "matrix": [], "lo": None, "hi": None}}
+    ms.update(over)
+    sent = []
+    monkeypatch.setenv("GCODE_DIR", str(tmp_path / "gcodes"))
+    (tmp_path / "gcodes").mkdir(exist_ok=True)
     monkeypatch.delenv("MOONRAKER_URL", raising=False)
-    job = Path(os.environ["PCB_MILL_JOBS"]) / "fakejob-probe"
-    job.mkdir()
-    (job / "status.json").write_text(json.dumps({
-        "state": "done", "files": ["onesided.nc"],
-        "extents": [0.0, 0.0, 70.0, 100.0], "board": {"w": 70.0, "h": 100.0}}))
-    client = TestClient(webapp.app)
-    r = client.get(f"/jobs/{job.name}")
-    assert r.status_code == 200
-    assert "Probe &amp; origin" in r.text and "70.0 × 100.0" in r.text
+    monkeypatch.setattr(moonraker, "machine_state", lambda: ms)
+    monkeypatch.setattr(moonraker, "gcode", lambda s, timeout=15: sent.append(s) or {"result": "ok"})
+    webapp._RUNNING.clear()
+    return ms, sent
 
 
-def test_fragment_route_renders(tmp_path, monkeypatch):
-    """The htmx poll target returns the dynamic body partial."""
-    monkeypatch.setenv("GCODE_DIR", str(tmp_path))
-    monkeypatch.delenv("MOONRAKER_URL", raising=False)
-    job = Path(os.environ["PCB_MILL_JOBS"]) / "fakejob-frag"
-    job.mkdir()
-    (job / "status.json").write_text(json.dumps({
-        "state": "done", "files": ["onesided.nc"],
-        "extents": [0.0, 0.0, 70.0, 100.0], "board": {"w": 70.0, "h": 100.0}}))
-    client = TestClient(webapp.app)
-    r = client.get(f"/jobs/{job.name}/fragment")
-    assert r.status_code == 200
-    assert "Probe &amp; origin" in r.text
-    assert "steps" in r.text  # workflow step list rendered
-    assert "<html>" not in r.text  # partial, not a full page
+def _job(name, **st):
+    job = Path(os.environ["PCB_MILL_JOBS"]) / name
+    (job / "out").mkdir(parents=True, exist_ok=True)
+    (job / "out" / "isolation.nc").write_text("G21\nM3 S20000\nG1 X1 Y1\nM5\n")
+    base = {"state": "done", "files": ["isolation.nc"], "extents": [0.8, 0.8, 90.0, 88.0],
+            "board": {"w": 89.2, "h": 87.2}}
+    base.update(st)
+    (job / "status.json").write_text(json.dumps(base))
+    return job
+
+
+def test_steps_follow_live_klipper_state(tmp_path, monkeypatch):
+    _fake_machine(monkeypatch, tmp_path, homed="")
+    job = _job("wf-1")
+    r = TestClient(webapp.app).get(f"/jobs/{job.name}")
+    assert "Home (G28)" in r.text and "Find the copper" not in r.text
+    _fake_machine(monkeypatch, tmp_path, datum_done=False)
+    r = TestClient(webapp.app).get(f"/jobs/{job.name}")
+    assert "Find the copper" in r.text and "Probe &amp; mesh" not in r.text
+    _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    r = TestClient(webapp.app).get(f"/jobs/{job.name}")
+    assert "Probe &amp; mesh" in r.text and "10 × 10" in r.text
+
+
+def test_mesh_route_sends_planned_macro(tmp_path, monkeypatch):
+    _, sent = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job("wf-2")
+
+    async def run():
+        r = TestClient(webapp.app).post(f"/jobs/{job.name}/mesh", follow_redirects=False)
+        assert r.status_code == 303
+        await asyncio.sleep(0.2)
+
+    # TestClient runs the app loop in a thread; give the background task time
+    asyncio.run(run())
+    time.sleep(0.5)
+    assert sent and sent[0].startswith("PCB_MESH X0=28.300 Y0=32.300")
+    assert "SAMPLES=1" in sent[0]
+
+
+def test_mesh_route_refuses_without_datum(tmp_path, monkeypatch):
+    _, sent = _fake_machine(monkeypatch, tmp_path, datum_done=False)
+    job = _job("wf-3")
+    r = TestClient(webapp.app).post(f"/jobs/{job.name}/mesh")
+    assert r.status_code == 409 and not sent
+
+
+def test_mesh_route_refuses_when_it_does_not_fit(tmp_path, monkeypatch):
+    _, sent = _fake_machine(monkeypatch, tmp_path, datum_done=True, origin=(40.0, 30.0))
+    job = _job("wf-4")
+    r = TestClient(webapp.app).post(f"/jobs/{job.name}/mesh")
+    assert r.status_code == 409 and "travel" in r.text and not sent
+
+
+def test_send_requires_mesh_covering_job(tmp_path, monkeypatch):
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job("wf-5")
+    r = TestClient(webapp.app).post(f"/jobs/{job.name}/send")
+    assert r.status_code == 409          # no mesh yet
+    plan = probe.mesh_plan((0.8, 0.8, 90.0, 88.0), (26.0, 30.0))
+    ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
+                      matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
+    r = TestClient(webapp.app).post(f"/jobs/{job.name}/send", follow_redirects=False)
+    assert r.status_code == 303
+    sent_file = tmp_path / "gcodes" / "pcb-mill" / job.name / "isolation_run.nc"
+    assert sent_file.read_text().startswith("PCB_READY X0=0.800")
+
+
+def test_send_refuses_mesh_that_is_too_small(tmp_path, monkeypatch):
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job("wf-6")
+    ms["mesh"].update(profile="default", min=[28.0, 32.0], max=[46.0, 50.0],
+                      matrix=[[0.0]], lo=0.0, hi=0.0)       # the 18 mm test patch
+    assert TestClient(webapp.app).post(f"/jobs/{job.name}/send").status_code == 409
+
+
+def test_oversize_job_is_rejected_page(tmp_path, monkeypatch):
+    _fake_machine(monkeypatch, tmp_path)
+    job = _job("wf-7", state="rejected", error="cut area is 98.0 × 50.0 mm; the limit is 97 × 97 mm")
+    r = TestClient(webapp.app).get(f"/jobs/{job.name}")
+    assert r.status_code == 200 and "limit is 97" in r.text and "Home (G28)" not in r.text
 
 
 def test_index_has_collapsed_advanced():

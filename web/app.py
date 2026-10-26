@@ -3,10 +3,14 @@
 Run locally:   uv run uvicorn web.app:app --port 8090
 On the Pi:     MOONRAKER_URL=http://127.0.0.1:7125 uv run uvicorn web.app:app --host 0.0.0.0 --port 8090
 
-Beyond conversion, the job page drives the board-probing step: set the
-origin (G92) where the bit sits, then run PCB_MESH over exactly the board's
-extents (from the generated G-code) at ~10mm spacing. Jogging/estop stays
-in Fluidd. See docs/gerber-web-ui-design.md.
+Beyond conversion the job page walks the machine workflow, one button per
+step, reading live state from Klipper (so a restart or a moved board shows up
+immediately): home -> find the copper (PCB_DATUM) -> mesh the cut area
+(PCB_MESH, ~10 mm spacing) -> send the job to Fluidd. All motion logic lives
+in Klipper macros (klipper/printer.cfg); this app only sequences them and
+refuses to proceed when the live state doesn't match. The job file starts
+with PCB_READY, which aborts the cut unless the session has a datum and a
+mesh covering the job. Jogging and the real e-stop stay in Fluidd.
 """
 
 from __future__ import annotations
@@ -90,11 +94,17 @@ async def _convert(job: Path, copper: str, side: str, edge: str, drill: str, con
             _set_status(job, state="error", error="plot_toolpaths.py failed — see log")
             return
     files = sorted(p.name for p in out.glob("*.nc"))
-    ext = probe.extents_from_gcode(list(out.glob("*.nc")))
+    iso = out / "isolation.nc"
+    cut = probe.extents_from_gcode([iso] if iso.exists() else list(out.glob("*.nc")))
+    edge_nc = out / "edge.nc"
+    edge_ext = probe.extents_from_gcode([edge_nc]) if edge_nc.exists() else None
     board = None
-    if ext:
-        board = {"w": round(ext[2] - ext[0], 2), "h": round(ext[3] - ext[1], 2)}
-    _set_status(job, state="done", files=files, extents=ext, board=board,
+    if cut:
+        w, h = probe.size_of(cut)
+        board = {"w": round(w, 2), "h": round(h, 2)}
+    problem = probe.validate_job(cut, edge_ext)
+    _set_status(job, state="rejected" if problem else "done", error=problem,
+                files=files, extents=cut, edge_extents=edge_ext, board=board,
                 toolpaths="out/toolpaths.png" if (out / "toolpaths.png").exists() else None)
 
 
@@ -156,6 +166,34 @@ async def create_job(
     return RedirectResponse(f"/jobs/{job.name}", status_code=303)
 
 
+def _live() -> dict | None:
+    if not moonraker.control_available():
+        return None
+    try:
+        return moonraker.machine_state()
+    except Exception:  # noqa: BLE001 - Klipper down: page still renders, steps show "offline"
+        return None
+
+
+def _plan_for(st: dict, ms: dict | None):
+    """MeshPlan for the job at the saved board origin, or None if unknown."""
+    if not (st.get("extents") and ms and ms.get("origin")):
+        return None
+    try:
+        return probe.mesh_plan(tuple(st["extents"]), ms["origin"])
+    except ValueError:
+        return None
+
+
+def _mesh_covers(plan, ms: dict) -> bool:
+    m = ms["mesh"]
+    if not (plan and m["profile"] and m["min"] and m["max"]):
+        return False
+    tol = 0.01
+    return (m["min"][0] <= plan.x0 + tol and m["min"][1] <= plan.y0 + tol
+            and m["max"][0] >= plan.x1 - tol and m["max"][1] >= plan.y1 - tol)
+
+
 def _job_context(request: Request, name: str) -> dict:
     job = JOBS / name
     if not job.is_dir():
@@ -168,9 +206,20 @@ def _job_context(request: Request, name: str) -> dict:
             elapsed = int(time.time() - time.mktime(time.strptime(st["created"], "%Y-%m-%d %H:%M:%S")))
         except ValueError:
             pass
+    ms = _live() if st.get("state") == "done" else None
+    plan = _plan_for(st, ms)
+    steps = None
+    if ms is not None:
+        steps = {
+            "origin": ms["origin"] is not None,
+            "homed": all(a in ms["homed"] for a in "xyz"),
+            "datum": ms["datum_done"],
+            "mesh": _mesh_covers(plan, ms),
+        }
     return {"request": request, "name": name, "st": st, "log": log, "elapsed": elapsed,
             "moonraker": moonraker.available(), "moonraker_control": moonraker.control_available(),
-            "fluidd": moonraker.fluidd()}
+            "fluidd": moonraker.fluidd(), "ms": ms, "plan": plan, "steps": steps,
+            "phase": st.get("phase")}
 
 
 @app.get("/jobs/{name}", response_class=HTMLResponse)
@@ -192,80 +241,109 @@ async def job_file(name: str, path: str):
     return FileResponse(f, filename=f.name)
 
 
-@app.post("/jobs/{name}/origin")
-async def set_origin(name: str):
-    """Record the bit's current XY as the board corner (job 0,0) via G92.
+# ---------------------------------------------------------------------------
+# machine phases: each runs ONE Klipper macro in the background, tracked in
+# status.json so the page can poll it. Only one phase runs at a time.
+# ---------------------------------------------------------------------------
+_RUNNING: set[str] = set()
 
-    Goes through the machine's SET_BOARD_ORIGIN macro rather than a bare
-    ``G92 X0 Y0`` so the corner is also persisted to Klipper's save_variables
-    (variables.cfg): X/Y homing is a real endstop, so that machine XY stays
-    valid across restarts and ``G28`` can drive straight back to the board
-    corner next session.
-    """
+
+async def _run_phase(job: Path, phase: str, script: str, timeout: float):
+    _RUNNING.add(job.name)
+    _set_status(job, phase={"name": phase, "state": "running", "script": script,
+                            "started": time.time()})
+    try:
+        await asyncio.to_thread(moonraker.gcode, script, timeout)
+    except Exception as e:  # noqa: BLE001 - Klipper's message goes straight to the UI
+        _set_status(job, phase={"name": phase, "state": "error", "script": script,
+                                "error": str(e)[:400]})
+    else:
+        _set_status(job, phase={"name": phase, "state": "done", "script": script})
+    finally:
+        _RUNNING.discard(job.name)
+
+
+def _job_ready(name: str) -> tuple[Path, dict]:
     job = JOBS / name
     st = _status(job)
     if st.get("state") != "done":
-        raise HTTPException(409, "job not finished")
-    x, y = moonraker.toolhead_xy()
+        raise HTTPException(409, "job not ready: " + str(st.get("error") or st.get("state")))
+    if not moonraker.control_available():
+        raise HTTPException(409, "Moonraker control not available")
+    if _RUNNING:
+        raise HTTPException(409, "a machine step is already running")
+    return job, st
+
+
+def _start(job: Path, phase: str, script: str, timeout: float = 120):
+    asyncio.create_task(_run_phase(job, phase, script, timeout))
+    return RedirectResponse(f"/jobs/{job.name}", status_code=303)
+
+
+@app.post("/jobs/{name}/origin")
+async def set_origin(name: str):
+    """Save the bit's current XY as the board corner (SET_BOARD_ORIGIN, persisted)."""
+    _job_ready(name)
     moonraker.gcode("SET_BOARD_ORIGIN")
-    _set_status(job, origin={"x": round(x, 2), "y": round(y, 2)})
     return RedirectResponse(f"/jobs/{name}", status_code=303)
 
 
-async def _watch_probe(job: Path, x0: float, y0: float, nx: int, ny: int):
-    """Poll bed_mesh until the calibration for our region lands (or fails)."""
-    deadline = time.time() + 600
-    while time.time() < deadline:
-        await asyncio.sleep(3)
-        try:
-            if moonraker.printer_state() in ("error", "shutdown"):
-                _set_status(job, probe={"state": "error",
-                                        "error": "Klipper error during probing — check machine (clips attached? on copper?)"})
-                return
-            m = moonraker.bed_mesh()
-        except Exception:
-            continue
-        mat = m.get("probed_matrix") or []
-        if len(mat) == ny and mat and len(mat[0]) == nx:
-            mm = m.get("mesh_min") or [None, None]
-            if mm[0] is not None and abs(mm[0] - x0) < 0.5 and abs(mm[1] - y0) < 0.5:
-                zs = [z for row in mat for z in row]
-                _set_status(job, probe={
-                    "state": "done", "points": [nx, ny],
-                    "min": round(min(zs), 3), "max": round(max(zs), 3),
-                    "spread": round(max(zs) - min(zs), 3)})
-                return
-    _set_status(job, probe={"state": "error", "error": "timed out waiting for mesh"})
+@app.post("/jobs/{name}/home")
+async def home(name: str):
+    job, _ = _job_ready(name)
+    return _start(job, "home", "G28", timeout=180)
 
 
-@app.post("/jobs/{name}/probe")
-async def probe_board(name: str):
-    """Run PCB_MESH over exactly this board's extents (~10mm spacing)."""
-    job = JOBS / name
-    st = _status(job)
-    if st.get("state") != "done":
-        raise HTTPException(409, "job not finished")
-    if not st.get("origin"):
-        raise HTTPException(409, "set the board origin first")
-    if not st.get("extents"):
-        raise HTTPException(409, "no board extents — conversion incomplete")
-    x0, y0, x1, y1, nx, ny = probe.mesh_params(tuple(st["extents"]))
-    moonraker.gcode(f"PCB_MESH X0={x0:.2f} Y0={y0:.2f} X1={x1:.2f} Y1={y1:.2f} PTSX={nx} PTSY={ny}")
-    _set_status(job, probe={"state": "running", "points": [nx, ny],
-                            "region": [round(x0, 1), round(y0, 1), round(x1, 1), round(y1, 1)]})
-    asyncio.create_task(_watch_probe(job, x0, y0, nx, ny))
+@app.post("/jobs/{name}/datum")
+async def datum(name: str):
+    """Find the copper under the bit (bounded 3 mm search; run again if no contact)."""
+    job, _ = _job_ready(name)
+    ms = _live()
+    if not ms or not all(a in ms["homed"] for a in "xyz"):
+        raise HTTPException(409, "home first")
+    return _start(job, "datum", "PCB_DATUM DEPTH=3", timeout=60)
+
+
+@app.post("/jobs/{name}/mesh")
+async def mesh(name: str):
+    job, st = _job_ready(name)
+    ms = _live()
+    if not ms or not ms["datum_done"]:
+        raise HTTPException(409, "find the copper (datum) first")
+    plan = _plan_for(st, ms)
+    if plan is None:
+        raise HTTPException(409, "board origin not set")
+    if not plan.fits:
+        raise HTTPException(409, plan.problem)
+    return _start(job, "mesh", plan.gcode(), timeout=plan.seconds * 2 + 120)
+
+
+@app.post("/jobs/{name}/lift")
+async def lift(name: str):
+    """MILL_LIFT: raise Z, return to the board origin. For getting out of trouble."""
+    job, _ = _job_ready(name)
+    return _start(job, "lift", "MILL_LIFT", timeout=60)
+
+
+@app.post("/jobs/{name}/estop")
+async def estop(name: str):
+    moonraker.estop()
     return RedirectResponse(f"/jobs/{name}", status_code=303)
 
 
 @app.post("/jobs/{name}/send")
 async def send_to_machine(name: str):
-    job = JOBS / name
-    st = _status(job)
-    if st.get("state") != "done":
-        raise HTTPException(409, "job not finished")
-    sent = []
-    for fn in st["files"]:
-        moonraker.upload(job / "out" / fn, subdir=f"pcb-mill/{name}")
-        sent.append(fn)
-    _set_status(job, sent=sent)
+    """Upload the isolation job (PCB_READY header first) once datum + mesh are live."""
+    job, st = _job_ready(name)
+    ms = _live()
+    plan = _plan_for(st, ms)
+    if not (ms and ms["datum_done"] and plan and _mesh_covers(plan, ms)):
+        raise HTTPException(409, "datum and mesh must be done for this board position first")
+    src = job / "out" / "isolation.nc"
+    if not src.exists():
+        raise HTTPException(409, "isolation.nc missing (double-sided jobs are not supported yet)")
+    run = job / "out" / "isolation_run.nc"
+    run.write_text(probe.with_header(src.read_text(), tuple(st["extents"])))
+    moonraker.upload(run, subdir=f"pcb-mill/{name}")
+    _set_status(job, sent=[run.name])
     return RedirectResponse(f"/jobs/{name}", status_code=303)

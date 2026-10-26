@@ -54,13 +54,30 @@ def control_available() -> bool:
     return _api() is not None
 
 
-def gcode(script: str) -> dict:
+class KlipperError(RuntimeError):
+    """A G-code script failed inside Klipper (message is Klipper's own)."""
+
+
+def gcode(script: str, timeout: float = 15) -> dict:
+    """Run G-code and block until Klipper finishes it. Raises KlipperError."""
     base = _api()
     if not base:
         raise RuntimeError("Moonraker control not available")
-    r = httpx.post(f"{base}/printer/gcode/script", data={"script": script}, timeout=15)
-    r.raise_for_status()
+    r = httpx.post(f"{base}/printer/gcode/script", data={"script": script}, timeout=timeout)
+    if r.status_code >= 400:
+        try:
+            msg = r.json()["error"]["message"]
+        except Exception:  # noqa: BLE001
+            msg = f"HTTP {r.status_code}"
+        raise KlipperError(msg)
     return r.json()
+
+
+def estop() -> None:
+    base = _api()
+    if not base:
+        raise RuntimeError("Moonraker control not available")
+    httpx.post(f"{base}/printer/emergency_stop", timeout=5)
 
 
 def query(objects: str) -> dict:
@@ -115,3 +132,28 @@ def upload(path: Path, subdir: str = "") -> dict:
         )
     r.raise_for_status()
     return r.json()
+
+
+def machine_state() -> dict:
+    """Live Klipper session facts the workflow depends on (read-only)."""
+    s = query("toolhead&bed_mesh&gcode_macro%20PCB_DATUM&save_variables&webhooks")
+    v = s["save_variables"]["variables"]
+    mesh = s["bed_mesh"]
+    origin = None
+    if "board_x" in v and "board_y" in v:
+        origin = (float(v["board_x"]), float(v["board_y"]))
+    matrix = mesh.get("probed_matrix") or []
+    flat = [z for row in matrix for z in row]
+    return {
+        "klipper": s["webhooks"]["state"],
+        "homed": s["toolhead"]["homed_axes"],
+        "position": s["toolhead"]["position"][:3],
+        "origin": origin,
+        "datum_done": bool(s["gcode_macro PCB_DATUM"]["done"]),
+        "mesh": {
+            "profile": mesh.get("profile_name") or "",
+            "min": mesh.get("mesh_min"), "max": mesh.get("mesh_max"),
+            "matrix": matrix,
+            "lo": min(flat) if flat else None, "hi": max(flat) if flat else None,
+        },
+    }

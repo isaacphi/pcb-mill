@@ -3,10 +3,11 @@
 {% if st.state == "done" %}
 <ol class="steps">
   <li class="done">Convert</li>
-  <li class="{{ 'done' if st.origin else 'current' }}">Set origin</li>
-  <li class="{{ 'done' if st.probe and st.probe.state == 'done' else ('current' if st.origin else 'todo') }}">Probe mesh</li>
-  <li class="{{ 'done' if st.sent else ('current' if st.probe and st.probe.state == 'done' else 'todo') }}">Send files</li>
-  <li class="{{ 'current' if st.sent else 'todo' }}">Mill in Fluidd</li>
+  <li class="{{ 'done' if steps and steps.homed else 'current' }}">Home</li>
+  <li class="{{ 'done' if steps and steps.datum else ('current' if steps and steps.homed else 'todo') }}">Find copper</li>
+  <li class="{{ 'done' if steps and steps.mesh else ('current' if steps and steps.datum else 'todo') }}">Mesh</li>
+  <li class="{{ 'done' if st.sent else ('current' if steps and steps.mesh else 'todo') }}">Send</li>
+  <li class="{{ 'current' if st.sent else 'todo' }}">Cut in Fluidd</li>
 </ol>
 {% endif %}
 
@@ -40,35 +41,75 @@
   {% endif %}
 
   {% if moonraker_control %}
-<h2>Probe &amp; origin</h2>
-{% if st.board %}<p>Board: <b>{{ st.board.w }} × {{ st.board.h }} mm</b> — mesh points ~10&nbsp;mm apart.</p>{% endif %}
-{% if not st.origin %}
-<ol class="setup">
-  <li>Clamp the board, install the milling bit, spindle OFF</li>
-  <li>Clip the probe leads to the bit shank and the copper</li>
-  <li>In <a href="{{ fluidd }}" target="_blank">Fluidd</a>: home (<code>G28</code>), then jog the bit to the board's bottom-left corner, a few mm above the surface</li>
-</ol>
-<form method="post" action="/jobs/{{ name }}/origin"><button>Set board origin at bit position</button></form>
-{% elif st.probe and st.probe.state == "running" %}
+<h2>Machine</h2>
+{% if st.board %}<p>Cut area: <b>{{ st.board.w }} × {{ st.board.h }} mm</b>
+  (limit 97 × 97) — mesh points ≤ 10&nbsp;mm apart, inside the cut area.</p>{% endif %}
+
+{% if not ms %}
+<p class="err">Klipper is not reachable — is the printer in an error state? (Fluidd → FIRMWARE_RESTART)</p>
+{% else %}
+<p class="dim">Board origin (saved, machine): {% if ms.origin %}X{{ "%.1f"|format(ms.origin[0]) }} Y{{ "%.1f"|format(ms.origin[1]) }}{% else %}<b>not set</b>{% endif %}
+  · bit at X{{ "%.1f"|format(ms.position[0]) }} Y{{ "%.1f"|format(ms.position[1]) }}
+  · homed: {{ ms.homed or "no" }}</p>
+
+{% if phase and phase.state == "running" %}
 <div class="processing">
   <div class="spinner"></div>
   <div>
-    <p><b>Probing…</b> {{ st.probe.points[0] }}×{{ st.probe.points[1] }} points, region {{ st.probe.region|join(', ') }}.</p>
-    <p class="dim">Watch the machine — the bit must stop the instant it touches copper. Hand near the power switch.</p>
+    <p><b>Running {{ phase.name }}…</b> <code>{{ phase.script }}</code></p>
+    <p class="dim">The machine is moving. Hand on the power switch (or the Fluidd e-stop).</p>
   </div>
 </div>
-{% elif st.probe and st.probe.state == "done" %}
-<p class="ok">Mesh done ({{ st.probe.points[0] }}×{{ st.probe.points[1] }} pts): surface {{ st.probe.min }}…{{ st.probe.max }} mm, spread {{ st.probe.spread }} mm. <b>Remove the probe clips before milling!</b></p>
-<form method="post" action="/jobs/{{ name }}/probe"><button>Re-probe</button></form>
-{% elif st.probe and st.probe.state == "error" %}
-<p class="err">Probe failed: {{ st.probe.error }}</p>
-<form method="post" action="/jobs/{{ name }}/probe"><button>Retry probe</button></form>
+<form method="post" action="/jobs/{{ name }}/estop"><button class="danger">EMERGENCY STOP</button></form>
 {% else %}
-<p>Origin set (bit was at machine {{ st.origin.x }}, {{ st.origin.y }}). Ready to mesh the board area.</p>
-<form method="post" action="/jobs/{{ name }}/probe"><button>Probe board</button></form>
-<form method="post" action="/jobs/{{ name }}/origin" class="inline"><button class="secondary">Re-set origin</button></form>
-{% endif %}
+  {% if phase and phase.state == "error" %}
+<p class="err">{{ phase.name }} failed: {{ phase.error }}</p>
+<form method="post" action="/jobs/{{ name }}/lift"><button>Lift the bit (MILL_LIFT)</button></form>
   {% endif %}
+
+  {% if not steps.origin %}
+<p>No board origin saved yet. In <a href="{{ fluidd }}" target="_blank">Fluidd</a>: <code>G28</code>, jog the bit over the board's
+bottom-left corner, then:</p>
+<form method="post" action="/jobs/{{ name }}/origin"><button>Save board origin at bit position</button></form>
+  {% elif not steps.homed %}
+<ol class="setup">
+  <li>Clamp the board in the pocket, milling bit installed, <b>spindle OFF</b></li>
+  <li>Clip the probe leads: one on the bit shank, one on the copper</li>
+</ol>
+<form method="post" action="/jobs/{{ name }}/home"><button>Home (G28) — goes to the saved board corner</button></form>
+  {% elif not steps.datum %}
+<ol class="setup">
+  <li>In <a href="{{ fluidd }}" target="_blank">Fluidd</a>, jog Z down until the bit is about <b>2 mm above the copper</b> (never lower than that — the search only goes 3 mm)</li>
+  <li>Check both probe clips are on</li>
+</ol>
+<form method="post" action="/jobs/{{ name }}/datum"><button>Find the copper (3 mm search)</button></form>
+<p class="dim">"No trigger" means the bit is still above the copper — lower it a little and run again.</p>
+  {% elif not steps.mesh %}
+    {% if plan and plan.fits %}
+<p>Mesh: <b>{{ plan.nx }} × {{ plan.ny }}</b> points over machine
+  X{{ "%.1f"|format(plan.x0) }}–{{ "%.1f"|format(plan.x1) }}, Y{{ "%.1f"|format(plan.y0) }}–{{ "%.1f"|format(plan.y1) }}
+  — about {{ plan.seconds // 60 }}&nbsp;min. The bit moves 2&nbsp;mm above the copper between points and probes down at each.</p>
+<form method="post" action="/jobs/{{ name }}/mesh"><button>Probe &amp; mesh</button></form>
+    {% else %}
+<p class="err">{{ plan.problem if plan else "Board origin not set." }}</p>
+    {% endif %}
+  {% else %}
+<p class="ok">Mesh ready: surface {{ "%.3f"|format(ms.mesh.lo) }} … {{ "%.3f"|format(ms.mesh.hi) }} mm
+  (spread {{ "%.3f"|format(ms.mesh.hi - ms.mesh.lo) }} mm). Z0 is the copper surface.</p>
+<table class="mesh">
+      {% for row in ms.mesh.matrix|reverse %}
+  <tr>{% for z in row %}<td>{{ "%+.3f"|format(z) }}</td>{% endfor %}</tr>
+      {% endfor %}
+</table>
+<p class="dim">Top row = highest Y. A tilt is fine — the cut follows it.</p>
+    {% if not st.sent %}
+<p><b>Remove both probe clips</b> before cutting.</p>
+<form method="post" action="/jobs/{{ name }}/send"><button>Send job to machine</button></form>
+    {% endif %}
+  {% endif %}
+{% endif %}
+{% endif %}
+{% endif %}
 
 <h2>Files</h2>
 <ul>
@@ -77,11 +118,9 @@
   {% endfor %}
 </ul>
   {% if st.sent %}
-<p class="ok">Sent to machine — in Fluidd under <b>pcb-mill/{{ name }}</b>.
-  <a href="{{ fluidd }}" target="_blank">Open Fluidd</a> to run them.</p>
-  {% elif moonraker %}
-<form method="post" action="/jobs/{{ name }}/send"><button>Send to machine</button></form>
-  {% else %}
+<p class="ok">Sent — open <a href="{{ fluidd }}" target="_blank"><b>Fluidd</b></a> → Jobs → <b>pcb-mill/{{ name }}/{{ st.sent[0] }}</b>
+  and press Print. The file starts with <code>PCB_READY</code>, which refuses to run without a live datum and mesh. Watch the first pass.</p>
+  {% elif not moonraker %}
 <p class="dim">Download the .nc files and upload them in Fluidd.</p>
   {% endif %}
 {% endif %}

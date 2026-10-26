@@ -699,19 +699,36 @@ Access from Mac: `⌘+K` → `smb://raspberrypi.local/gcodes`
 
 ## Part 5: Daily Workflow
 
-### Before every job (probing)
+### Before every job (probing) - web UI or console
 
-1. Clamp board, attach probe clips (bit shank + copper), spindle OFF.
-2. `G28` - lifts Z 10 mm, homes X/Y on their switches, stamps Z as a label
-   (25), and drives XY back to the stored board corner. **Z is never
-   endstop-homed** (the switch is at the bottom of the column - see incident
-   2026-10-25).
-3. First time on a new board position: jog XY to the board's bottom-left
-   corner and run `SET_BOARD_ORIGIN` - it `G92 X0 Y0` *and* persists the
-   machine XY, so every later `G28` returns there by itself.
-4. `PCB_MESH X0=.. Y0=.. X1=.. Y1=..` - probes the grid, sets Z=0 on the
-   copper. This probe is the only true Z datum; do it every session.
-5. **Remove clips.** `M3`, start the file.
+The web app (`:8081`) walks these steps, reading live state from Klipper.
+Everything it does is a Klipper macro you can also run by hand.
+
+1. Upload gerbers. The app refuses boards whose cut area exceeds 97 x 97 mm
+   (the pocket is 100 x 100; the rest is margin so the bit never nears the wall).
+2. Clamp board, probe clips on (bit shank + copper), spindle OFF.
+3. `G28` - lifts Z 10 mm, homes X/Y on their switches, stamps Z as a label
+   (25), drives XY to the stored board corner. **Z is never endstop-homed**
+   (switch is at the bottom of the column - incident 2026-10-25). `G28` also
+   voids any earlier datum and mesh, because Z gets a new label.
+4. First time on a new board position: jog to the bottom-left corner and run
+   `SET_BOARD_ORIGIN` (persists machine XY; later `G28`s return there).
+5. Jog Z to about 2 mm above the copper, then `PCB_DATUM` (3 mm search; "No
+   trigger" = still above, lower and repeat). Copper becomes **Z0**.
+   *Why it is safe:* the probe always descends to `stepper_z position_min`
+   (-0.5), so a dead probe can only go 0.5 mm below copper. The relabel
+   puts the floor exactly `DEPTH` below the start of the search.
+6. `PCB_MESH X0 Y0 X1 Y1 PTSX PTSY` (the web app computes these: cut extents
+   shrunk 1.5 mm, points <= 10 mm apart, bicubic). Travels 2 mm above the
+   datum plane between points, one sample each. A mesh with more than 1.5 mm
+   spread is rejected and cleared.
+7. **Remove clips.** The job file starts with `PCB_READY`, which aborts before
+   `M3` unless this session has a datum and a mesh covering the job (at the
+   current board origin). Press Print in Fluidd and watch the first pass.
+
+**Limits of the pocket:** the datum is taken at the board corner; points lower
+than 0.5 mm below it, or higher than 2 mm above it, fail the probe (safely, in
+air). Shim a board that is that far out of flat.
 
 `MILL_STATUS` prints homed axes, machine vs g-code position, offsets and the
 stored datums at any time.
