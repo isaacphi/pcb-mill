@@ -390,9 +390,11 @@ async def send_to_machine(name: str):
             continue
         # Klipper's virtual_sdcard only lists .gcode/.g/.gco; a .nc file is
         # invisible to it and "Print" fails with "Unable to open file".
-        run = out / f"{len(sent) + 1}_{src.stem}_run.gcode"
+        # top level of the gcodes root (no folders to hunt through in Fluidd's Jobs list);
+        # the job id prefix keeps jobs apart and the number gives the run order
+        run = out / f"{name[-6:]}_{len(sent) + 1}_{src.stem}.gcode"
         run.write_text(probe.with_header(src.read_text(), plan.job, deep))
-        moonraker.upload(run, subdir=f"pcb-mill/{name}")
+        moonraker.upload(run)
         sent.append(run.name)
     _set_status(job, sent=sent)
     # straight on to Fluidd's job list: that is where the cut is started

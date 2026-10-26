@@ -139,7 +139,7 @@ bottom-left corner, then:</p>
   {% endfor %}
 </ul>
   {% if st.sent %}
-<p class="ok">Sent to <a href="{{ fluidd }}" target="_blank"><b>Fluidd</b></a> → Jobs → <b>pcb-mill/{{ name }}</b>. Run them in this order, watching each:</p>
+<p class="ok">Sent to <a href="{{ fluidd }}/#/jobs" target="_blank"><b>Fluidd → Jobs</b></a> (top of the list). Run them in this order, watching each:</p>
 <ol>{% for f in st.sent %}<li><code>{{ f }}</code></li>{% endfor %}</ol>
 <p class="dim">Every file starts with <code>PCB_READY</code>, which refuses to run without a live datum and mesh for this board position. Drill and edge files also open room below the copper (<code>PCB_DEEP</code>). Don't run <code>G28</code> or move the board between files.</p>
   {% elif not moonraker %}

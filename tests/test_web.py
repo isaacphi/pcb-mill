@@ -388,12 +388,12 @@ def test_send_requires_mesh_covering_job(tmp_path, monkeypatch):
     r = TestClient(webapp.app).post(f"/jobs/{job.name}/send", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"].endswith(":8080/#/jobs")        # straight on to Fluidd
-    d = tmp_path / "gcodes" / "pcb-mill" / job.name
-    iso = (d / "1_isolation_run.gcode").read_text()
+    d = tmp_path / "gcodes"; k = job.name[-6:]
+    iso = (d / f"{k}_1_isolation.gcode").read_text()
     assert iso.startswith(f"PCB_READY X0={plan.job[0]:.3f}") and "PCB_DEEP" not in iso
-    assert all(f.suffix == ".gcode" for f in d.iterdir() if f.is_file())   # Klipper only prints .gcode/.g/.gco
-    assert (d / "2_drill_run.gcode").read_text().splitlines()[1] == "PCB_DEEP"
-    assert (d / "3_edge_run.gcode").read_text().splitlines()[1] == "PCB_DEEP"
+    assert sorted(f.suffix for f in d.iterdir() if f.is_file()) == [".gcode"] * 3   # Klipper only prints .gcode/.g/.gco
+    assert (d / f"{k}_2_drill.gcode").read_text().splitlines()[1] == "PCB_DEEP"
+    assert (d / f"{k}_3_edge.gcode").read_text().splitlines()[1] == "PCB_DEEP"
 
 
 def test_klipper_rounded_mesh_bounds_still_count_as_covering(tmp_path, monkeypatch):
