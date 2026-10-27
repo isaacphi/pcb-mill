@@ -8,6 +8,7 @@
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
+<main>
 <p><a href="/">← jobs</a></p>
 <h1>{{ st.title or name }} <span class="dim">{{ st.state }}{% if st.side %}, {{ st.side }} copper{% endif %}</span></h1>
 <details class="rename">
@@ -17,7 +18,7 @@
     <button class="secondary">Rename</button>
   </form>
 </details>
-<p id="flash" class="err"></p>
+<p id="flash" class="err" role="alert"></p>
 {# poll, but never while a field is being edited #}
 <div id="job-body" hx-get="/jobs/{{ name }}/fragment" hx-trigger="every 2s [!document.activeElement || document.activeElement.tagName !== 'INPUT']" hx-swap="innerHTML">
   {% include "_job_body.html" %}
@@ -30,5 +31,6 @@ document.body.addEventListener("htmx:responseError", e => {
 });
 document.body.addEventListener("htmx:beforeRequest", () => { document.getElementById("flash").textContent = ""; });
 </script>
+</main>
 </body>
 </html>

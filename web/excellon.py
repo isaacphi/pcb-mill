@@ -101,7 +101,7 @@ def hole_report(d: DrillData, bit_diameter: float, bore_tolerance: float) -> lis
         if n == 0:
             continue
         if dia < bit_diameter - 1e-9:
-            method = f"undersized — plunged at {bit_diameter:g} mm bit (hole comes out oversized)"
+            method = f"undersized; plunged at {bit_diameter:g} mm bit (hole comes out oversized)"
         elif dia <= bit_diameter + bore_tolerance:
             method = "plunged"
         else:

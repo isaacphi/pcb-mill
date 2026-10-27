@@ -7,18 +7,19 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<main>
 <h1>pcb-mill</h1>
 
 <form id="up" method="post" action="/upload" enctype="multipart/form-data">
   <div id="drop">
     <b>Drop Gerbers and drill files here</b>
-    <span class="dim">or <label class="link">choose files<input id="pick" type="file" name="files" multiple hidden></label></span>
+    <span class="dim">or <label class="link">choose files<input id="pick" type="file" name="files" multiple class="visually-hidden"></label></span>
     <ul id="found"></ul>
     <label id="nameRow" hidden>Job name
       <input id="jobName" name="title" maxlength="120" placeholder="job name"></label>
     <label id="sideRow" hidden>Copper side
       <select name="side"><option value="bottom">bottom</option><option value="top">top</option></select></label>
-    <p id="err" class="err"></p>
+    <p id="err" class="err" role="alert"></p>
   </div>
 
   <details>
@@ -42,13 +43,13 @@
 <h2>Jobs</h2>
 {% if recent %}
 <table class="jobs">
-  <thead><tr><th>Job</th><th>Size</th><th>Created</th><th>State</th></tr></thead>
+  <thead><tr><th scope="col">Job</th><th scope="col">Size</th><th scope="col">Created</th><th scope="col">State</th></tr></thead>
   {% for j in recent %}
   <tr><td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td><td>{{ j.size }}</td><td>{{ j.created }}</td>
       <td>{{ j.state }}{% if j.sent %} (sent){% endif %}</td></tr>
   {% endfor %}
 </table>
-{% else %}<p class="dim">None yet.</p>{% endif %}
+{% else %}<p class="dim">No jobs yet. Drop Gerbers and drill files above to create one.</p>{% endif %}
 
 <script>
 const NAMES = [[/\.(gm1|gko)$|(^|[-_.])(edge|outline|profile)([-_.]|$)/i, "outline"],
@@ -100,5 +101,6 @@ document.getElementById("up").addEventListener("submit", async e => {
   go.disabled = false;
 });
 </script>
+</main>
 </body>
 </html>

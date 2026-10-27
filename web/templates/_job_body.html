@@ -34,7 +34,7 @@
 
 {% if st.report %}
 <table>
-  <tr><th>hole</th><th>count</th><th>machined as</th></tr>
+  <tr><th scope="col">hole</th><th scope="col">count</th><th scope="col">machined as</th></tr>
   {% for r in st.report %}
   <tr><td>{{ "%.2f"|format(r.diameter) }} mm</td><td>{{ r.count }}</td><td>{{ r.method }}</td></tr>
   {% endfor %}
@@ -103,7 +103,7 @@ Jogging down stops on contact. Keep the machine e-stop within reach.</p>
 {{ jog(up_only=True) }}
 <p class="ok">Mesh ready: {{ "%.3f"|format(ms.mesh.lo) }} … {{ "%.3f"|format(ms.mesh.hi) }} mm
   (spread {{ "%.3f"|format(ms.mesh.hi - ms.mesh.lo) }})</p>
-<table class="mesh">
+<table class="mesh" aria-label="Mesh height map">
       {% for row in ms.mesh.matrix|reverse %}
   <tr>{% for z in row %}<td>{{ "%+.3f"|format(z) }}</td>{% endfor %}</tr>
       {% endfor %}
