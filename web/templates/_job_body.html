@@ -109,7 +109,7 @@ Jogging down stops on contact. Keep the machine e-stop within reach.</p>
       {% endfor %}
 </table>
     {% endif %}
-<form hx-post="/jobs/{{ name }}/send" hx-target="#job-body" hx-swap="innerHTML">
+<form id="send-form" hx-preserve="true" hx-post="/jobs/{{ name }}/send" hx-target="#job-body" hx-swap="innerHTML">
   <p class="warn"><b>Before sending:</b> make sure spindle power is ON and the probe clips are OFF.</p>
   <label><input type="checkbox" name="spindle_on" required> Spindle power is ON</label>
   <label><input type="checkbox" name="clips_off" required> Probe clips are OFF</label>
@@ -129,12 +129,12 @@ Jogging down stops on contact. Keep the machine e-stop within reach.</p>
 
 <p><a href="/jobs/{{ name }}/combined.gcode" download>Download combined .gcode</a></p>
 
-<details>
+<details id="generated-files" hx-preserve="true">
   <summary>Generated files</summary>
   <ul>{% for f in st.files %}<li><a href="/jobs/{{ name }}/files/out/{{ f }}">{{ f }}</a></li>{% endfor %}</ul>
 </details>
 {% endif %}
 
 {% if log %}
-<details class="log"><summary>Log</summary><pre>{{ log }}</pre></details>
+<details id="log-panel" class="log" hx-preserve="true"><summary>Log</summary><pre>{{ log }}</pre></details>
 {% endif %}
