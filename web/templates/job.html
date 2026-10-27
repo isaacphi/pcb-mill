@@ -20,10 +20,18 @@
 </details>
 <p id="flash" class="err" role="alert"></p>
 {# poll, but never while a field is being edited #}
-<div id="job-body" hx-get="/jobs/{{ name }}/fragment" hx-trigger="every 2s [!document.activeElement || document.activeElement.tagName !== 'INPUT']" hx-swap="innerHTML">
+<div id="job-body" hx-get="/jobs/{{ name }}/fragment" hx-trigger="every 2s [jobPollAllowed()]" hx-swap="innerHTML">
   {% include "_job_body.html" %}
 </div>
 <script>
+// Do not replace the body while the operator is filling a field, has a
+// checkbox ticked, or has a disclosure open: innerHTML swaps lose that state.
+window.jobPollAllowed = () => {
+  const active = document.activeElement;
+  if (active && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName)) return false;
+  const body = document.getElementById("job-body");
+  return !body || !body.querySelector("details[open], input:checked");
+};
 document.body.addEventListener("htmx:responseError", e => {
   let msg = e.detail.xhr.responseText;
   try { msg = JSON.parse(msg).detail; } catch (_) {}
