@@ -1,15 +1,22 @@
 body { font: 15px/1.45 system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
 h1 { font-size: 1.5rem; }
-.dim { color: #777; font-weight: normal; font-size: .9em; }
-.err { color: #b00; font-weight: 600; }
-.ok { color: #070; font-weight: 600; }
+.dim { color: #5f6368; font-weight: normal; font-size: .9em; }
+.err { color: #b00020; font-weight: 600; }
+.ok { color: #0a6b2d; font-weight: 600; }
 fieldset { margin: 1rem 0; border: 1px solid #ccc; border-radius: 6px; }
 label { display: inline-block; margin: .3rem 1rem .3rem 0; }
 input[type=file] { max-width: 300px; }
 button { font-size: 1rem; padding: .5rem 1.2rem; background: #446; color: #fff;
   border: 0; border-radius: 6px; cursor: pointer; }
 button:hover { background: #334; }
-button.secondary { background: #888; }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
+  outline: 3px solid #7d8cff; outline-offset: 2px;
+}
+button:disabled { background: #bbb; color: #555; cursor: not-allowed; }
+button.secondary { background: #5f6368; }
+button.secondary:hover { background: #3f4448; }
+.warn { color: #6f4500; background: #fff7e6; border-left: 4px solid #c98a00;
+  padding: .55rem .8rem; margin: .8rem 0; }
 form.inline { display: inline; }
 details { margin: 1rem 0; }
 summary { cursor: pointer; font-weight: 600; }
@@ -32,8 +39,8 @@ img.preview { max-width: 100%; border: 1px solid #ccc; }
 .spinner { width: 34px; height: 34px; flex: none; border: 4px solid #d0d0e8;
   border-top-color: #446; border-radius: 50%; animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-button.danger { background: #b00; font-weight: 700; }
-button.danger:hover { background: #800; }
+button.danger { background: #a00000; font-weight: 700; }
+button.danger:hover { background: #780000; }
 table.mesh td { font-family: ui-monospace, monospace; font-size: .85rem; padding: .2rem .5rem; text-align: right; }
 form.jog { margin: .6rem 0; } form.jog button { padding: .3rem .7rem; margin: 0 .15rem; }
 #drop { border: 2px dashed #aab; border-radius: 8px; padding: 1.5rem; text-align: center; margin: 1rem 0; }
@@ -41,8 +48,15 @@ form.jog { margin: .6rem 0; } form.jog button { padding: .3rem .7rem; margin: 0 
 #found { list-style: none; padding: 0; margin: .8rem 0; text-align: left; display: inline-block; }
 #found li { font-size: .9rem; }
 label.link { color: #446; text-decoration: underline; cursor: pointer; }
+table.jobs { width: 100%; }
 table.jobs td { padding: .3rem .8rem; }
-form.rename { margin: -.4rem 0 1rem; }
-form.rename input { font-size: .95rem; padding: .25rem .5rem; width: 18em; }
-form.rename button { font-size: .8rem; padding: .25rem .7rem; }
+details.rename { margin: -.4rem 0 1rem; }
+details.rename summary { font-weight: normal; color: #5f6368; font-size: .85rem; }
+details.rename form { margin-top: .4rem; }
+details.rename input { font-size: .95rem; padding: .25rem .5rem; width: 18em; }
+details.rename button { font-size: .8rem; padding: .25rem .7rem; }
 #nameRow input { font-size: 1rem; padding: .3rem .5rem; min-width: 18em; }
+.short-input { width: 5em; }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}

@@ -1,7 +1,8 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>pcb-mill</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -10,7 +11,7 @@
 
 <form id="up" method="post" action="/upload" enctype="multipart/form-data">
   <div id="drop">
-    <b>Drop the gerbers and drill files here</b>
+    <b>Drop Gerbers and drill files here</b>
     <span class="dim">or <label class="link">choose files<input id="pick" type="file" name="files" multiple hidden></label></span>
     <ul id="found"></ul>
     <label id="nameRow" hidden>Job name
@@ -41,9 +42,10 @@
 <h2>Jobs</h2>
 {% if recent %}
 <table class="jobs">
+  <thead><tr><th>Job</th><th>Size</th><th>Created</th><th>State</th></tr></thead>
   {% for j in recent %}
   <tr><td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td><td>{{ j.size }}</td><td>{{ j.created }}</td>
-      <td>{{ j.state }}{% if j.sent %} · sent{% endif %}</td></tr>
+      <td>{{ j.state }}{% if j.sent %} (sent){% endif %}</td></tr>
   {% endfor %}
 </table>
 {% else %}<p class="dim">None yet.</p>{% endif %}

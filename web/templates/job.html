@@ -1,18 +1,22 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ st.title or name }}</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
 <p><a href="/">← jobs</a></p>
-<h1>{{ st.title or name }} <span class="dim">{{ st.state }}{% if st.side %} · {{ st.side }} copper{% endif %}</span></h1>
-<form class="rename" method="post" action="/jobs/{{ name }}/rename">
-  <label>Job name <input name="title" value="{{ st.title or name }}" maxlength="120" required></label>
-  <button class="secondary">Rename</button>
-</form>
+<h1>{{ st.title or name }} <span class="dim">{{ st.state }}{% if st.side %}, {{ st.side }} copper{% endif %}</span></h1>
+<details class="rename">
+  <summary>Rename job</summary>
+  <form method="post" action="/jobs/{{ name }}/rename">
+    <label>Job name <input name="title" value="{{ st.title or name }}" maxlength="120" required></label>
+    <button class="secondary">Rename</button>
+  </form>
+</details>
 <p id="flash" class="err"></p>
 {# poll, but never while a field is being edited #}
 <div id="job-body" hx-get="/jobs/{{ name }}/fragment" hx-trigger="every 2s [!document.activeElement || document.activeElement.tagName !== 'INPUT']" hx-swap="innerHTML">

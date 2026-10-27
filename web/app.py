@@ -104,14 +104,14 @@ async def _convert(job: Path, copper: str, side: str, edge: str, drill: str, con
     rc, text = await run([sys.executable, ROOT / "mill.py", "--copper", copper, "--side", side,
                           "--edge", edge, "--drill", drill, "--config", config, "-o", out])
     if rc != 0:
-        _set_status(job, state="error", error="mill.py failed — see log")
+        _set_status(job, state="error", error="mill.py failed; see log")
         return
     m = MIRROR_RE.search(text)
     if m:
         _set_status(job, mirror_x=float(m.group(1)))
         rc, _ = await run([sys.executable, ROOT / "plot_toolpaths.py", out, m.group(1)])
         if rc != 0:
-            _set_status(job, state="error", error="plot_toolpaths.py failed — see log")
+            _set_status(job, state="error", error="plot_toolpaths.py failed; see log")
             return
     files = sorted(p.name for p in out.glob("*.nc"))
     iso = out / "isolation.nc"

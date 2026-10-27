@@ -429,7 +429,7 @@ def test_setup_route_homes_and_moves_bed_forward(tmp_path, monkeypatch):
     st = json.loads((job / "status.json").read_text())
     assert st["setup_done"] is True and st["board_ready"] is False
     page = client.get(f"/jobs/{job.name}")
-    assert "Board attached" in page.text and "Find the copper" not in page.text
+    assert "Board attached" in page.text and ">Find copper</button>" not in page.text
 
     r = client.post(f"/jobs/{job.name}/board-ready", headers={"HX-Request": "true"})
     assert r.status_code == 200
@@ -441,16 +441,16 @@ def test_steps_follow_live_klipper_state(tmp_path, monkeypatch):
     _fake_machine(monkeypatch, tmp_path, homed="")
     job = _job("wf-1")
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert ">Home</button>" in r.text and "Find the copper" not in r.text
+    assert ">Home</button>" in r.text and ">Find copper</button>" not in r.text
     _fake_machine(monkeypatch, tmp_path, datum_done=False)          # still at the corner, high
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Go to probe start (5, 5)" in r.text and "Find the copper" not in r.text
+    assert "Go to probe start (5, 5)" in r.text and ">Find copper</button>" not in r.text
     _fake_machine(monkeypatch, tmp_path, datum_done=False, position=[30.4, 32.5, 12.0])
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Find the copper" in r.text and "Probe &amp; mesh" not in r.text and "▼ 1" in r.text
+    assert ">Find copper</button>" in r.text and ">Probe mesh</button>" not in r.text and "▼ 1" in r.text
     _fake_machine(monkeypatch, tmp_path, datum_done=True)
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Probe &amp; mesh" in r.text and "10 × 10" in r.text
+    assert ">Probe mesh</button>" in r.text and "10 × 10" in r.text
 
 
 def test_mesh_route_sends_planned_macro(tmp_path, monkeypatch):
@@ -529,7 +529,7 @@ def test_mesh_can_be_skipped_and_still_sent(tmp_path, monkeypatch):
     r = c.post(f"/jobs/{job.name}/skip-mesh", headers={"HX-Request": "true"})
     assert r.status_code == 200
     assert json.loads((job / "status.json").read_text())["mesh_skipped"] is True
-    assert "Mesh skipped" in r.text and "Send &amp; open Fluidd" in r.text
+    assert "Mesh skipped" in r.text and "Send to Fluidd" in r.text
     r = c.post(f"/jobs/{job.name}/send", data={"spindle_on": "on", "clips_off": "on"},
                follow_redirects=False)
     assert r.status_code == 303
@@ -547,7 +547,7 @@ def test_klipper_rounded_mesh_bounds_still_count_as_covering(tmp_path, monkeypat
     ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1 - 0.018, plan.y1],
                       matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Send &amp; open Fluidd" in r.text
+    assert "Send to Fluidd" in r.text
 
 
 def test_send_refuses_mesh_that_is_too_small(tmp_path, monkeypatch):

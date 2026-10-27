@@ -28,8 +28,8 @@
 
 {% if st.state in ["queued", "converting"] %}
 <div class="processing"><div class="spinner"></div>
-  <div><b>Converting…</b>{% if elapsed is not none %} {{ elapsed // 60 }}:{{ "%02d"|format(elapsed % 60) }}{% endif %}
-    <span class="dim"> (about 5–15 min on the Pi)</span></div></div>
+  <div><b>Converting</b>{% if elapsed is not none %} {{ elapsed // 60 }}:{{ "%02d"|format(elapsed % 60) }}{% endif %}
+    <span class="dim"> (about 5 to 15 min on the Pi)</span></div></div>
 {% endif %}
 
 {% if st.report %}
@@ -49,10 +49,7 @@
 {% if not ms %}
 <p class="err">Klipper not reachable. Check Fluidd (FIRMWARE_RESTART if it's in error).</p>
 {% else %}
-<p class="dim">{{ st.board.w }} × {{ st.board.h }} mm
-  · origin {% if ms.origin %}X{{ "%.1f"|format(ms.origin[0]) }} Y{{ "%.1f"|format(ms.origin[1]) }}{% else %}<b>not set</b>{% endif %}
-  · bit X{{ "%.1f"|format(ms.position[0]) }} Y{{ "%.1f"|format(ms.position[1]) }}
-  · homed {{ ms.homed or "no" }}</p>
+<p class="dim">{{ st.board.w }} × {{ st.board.h }} mm; origin {% if ms.origin %}X{{ "%.1f"|format(ms.origin[0]) }} Y{{ "%.1f"|format(ms.origin[1]) }}{% else %}<b>not set</b>{% endif %}; bit X{{ "%.1f"|format(ms.position[0]) }} Y{{ "%.1f"|format(ms.position[1]) }}; homed {{ ms.homed or "no" }}</p>
 
 {% if printing and st.sent %}
 {{ act("stop", "Stop", "danger", "Stop the current job? It stops after the current move.") }}
@@ -73,7 +70,7 @@
 {{ act("setup", "Home & move bed forward", "", "Home now? This clears the current datum and mesh.") }}
   {% elif not st.board_ready %}
 <p>Attach the copper board and clamp it. Clip the probe leads to the tool shank and the board's copper pour. Spindle off.</p>
-{{ act("board-ready", "Board attached — start probing") }}
+{{ act("board-ready", "Board attached") }}
   {% elif not steps.origin %}
 <p>No board origin. Jog to the pocket's bottom-left corner, then:</p>
 {{ act("origin", "Save origin at bit position") }}
@@ -85,23 +82,23 @@
 <p>Move over the probe start point while the bit is still high.</p>
 {{ act("start", "Go to probe start (%g, %g)"|format(plan.job[0], plan.job[1])) }}
     {% else %}
-<p>Jog down toward the copper, or let <b>Find the copper</b> search down up to {{ "%g"|format(datum_depth) }} mm.
+<p>Jog down toward the copper, or let <b>Find copper</b> search down up to {{ "%g"|format(datum_depth) }} mm.
 Jogging down stops on contact. Keep the machine e-stop within reach.</p>
 {{ jog() }}
-{{ act("datum", "Find the copper") }}
+{{ act("datum", "Find copper") }}
 <p class="dim">"No trigger" = still above copper, or the clips are not making contact. Lower/recheck and repeat.</p>
     {% endif %}
   {% elif not steps.mesh and not st.mesh_skipped %}
     {% if plan and plan.fits %}
 <p>{{ plan.nx }} × {{ plan.ny }} points, about {{ plan.seconds // 60 }} min.</p>
-{{ act("mesh", "Probe & mesh") }}
+{{ act("mesh", "Probe mesh") }}
 {{ act("skip-mesh", "Skip mesh (flat datum only)", "secondary", "Cut without a height map? Z depth may vary across the board.") }}
     {% else %}
 <p class="err">{{ plan.problem if plan else "Board origin not set." }}</p>
     {% endif %}
   {% else %}
     {% if st.mesh_skipped and not steps.mesh %}
-<p class="err">Mesh skipped — using the flat datum plane only. Z depth may vary across the board.</p>
+<p class="err">Mesh skipped. Using the flat datum plane only. Z depth may vary across the board.</p>
     {% else %}
 {{ jog(up_only=True) }}
 <p class="ok">Mesh ready: {{ "%.3f"|format(ms.mesh.lo) }} … {{ "%.3f"|format(ms.mesh.hi) }} mm
@@ -113,11 +110,11 @@ Jogging down stops on contact. Keep the machine e-stop within reach.</p>
 </table>
     {% endif %}
 <form hx-post="/jobs/{{ name }}/send" hx-target="#job-body" hx-swap="innerHTML">
-  <p class="err"><b>Before sending:</b> make sure spindle power is ON and the probe clips are OFF.</p>
+  <p class="warn"><b>Before sending:</b> make sure spindle power is ON and the probe clips are OFF.</p>
   <label><input type="checkbox" name="spindle_on" required> Spindle power is ON</label>
   <label><input type="checkbox" name="clips_off" required> Probe clips are OFF</label>
-  <label>Extra isolation depth <input type="number" name="extra_depth" value="{{ st.extra_depth or 0 }}" min="0" max="0.3" step="0.01" style="width:5em"> mm</label>
-  <button>{{ "Send again" if st.sent else "Send & open Fluidd" }}</button>
+  <label>Extra isolation depth <input type="number" name="extra_depth" value="{{ st.extra_depth or 0 }}" min="0" max="0.3" step="0.01" class="short-input"> mm</label>
+  <button>{{ "Send again" if st.sent else "Send to Fluidd" }}</button>
 </form>
   {% endif %}
 {% endif %}
@@ -125,12 +122,12 @@ Jogging down stops on contact. Keep the machine e-stop within reach.</p>
   {% endif %}
 
   {% if st.sent %}
-<p class="ok">In <a href="{{ fluidd }}/#/jobs" target="_blank">Fluidd → Jobs → {{ st.sent_folder }}</a>. Run in order:</p>
+<p class="ok">Open the <a href="{{ fluidd }}/#/jobs" target="_blank">Fluidd Jobs folder</a> for {{ st.sent_folder }}. Run in order:</p>
 <ol>{% for f in st.sent %}<li><code>{{ f }}</code></li>{% endfor %}</ol>
 <p class="dim">Don't home or move the board between files.</p>
   {% endif %}
 
-<p><a href="/jobs/{{ name }}/combined.gcode" download>Download all operations as one .gcode</a></p>
+<p><a href="/jobs/{{ name }}/combined.gcode" download>Download combined .gcode</a></p>
 
 <details>
   <summary>Generated files</summary>
