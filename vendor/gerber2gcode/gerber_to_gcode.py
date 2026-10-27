@@ -245,6 +245,15 @@ class GerberToGcode:
             traceback.print_exc()
             sys.exit(1)
 
+    def _read_edge_line_width(self, path: str) -> float:
+        """Width of the Edge.Cuts stroke from its Gerber aperture, in mm."""
+        try:
+            text = Path(path).read_text(errors="replace")
+        except OSError:
+            return 0.0
+        widths = [float(m) for m in re.findall(r"%ADD\d+C,([\d.]+)\*%", text)]
+        return max(widths) if widths else 0.0
+
     def smooth_path(self, path: np.ndarray, tolerance: float = 0.5) -> np.ndarray:
         """Smooth a path using Douglas-Peucker algorithm"""
         from skimage.measure import approximate_polygon
@@ -266,14 +275,18 @@ class GerberToGcode:
             return gerber_bounds
 
         gb_min_x, gb_min_y, gb_max_x, gb_max_y = gerber_bounds
-        scale_factor = 25.4 / self.dpi
+        # Pygerber uses int(dpi / 25.4) pixels/mm, so 25.4/dpi is not exact.
+        # Derive the actual pixel pitch from the rendered bitmap dimensions.
+        W, H = bitmap.shape[1], bitmap.shape[0]
+        scale_x = (gb_max_x - gb_min_x) / (W - 1) if W > 1 else (25.4 / self.dpi)
+        scale_y = (gb_max_y - gb_min_y) / (H - 1) if H > 1 else (25.4 / self.dpi)
 
         # Bitmap pixel coords to mm, then offset by Gerber origin
-        min_x = cols.min() * scale_factor + gb_min_x
-        max_x = cols.max() * scale_factor + gb_min_x
+        min_x = cols.min() * scale_x + gb_min_x
+        max_x = cols.max() * scale_x + gb_min_x
         # Y-axis is flipped: bitmap row 0 = top = max Y in Gerber
-        min_y = gb_max_y - rows.max() * scale_factor
-        max_y = gb_max_y - rows.min() * scale_factor
+        min_y = gb_max_y - rows.max() * scale_y
+        max_y = gb_max_y - rows.min() * scale_y
 
         return (min_x, min_y, max_x, max_y)
 
@@ -864,9 +877,18 @@ class GerberToGcode:
         # bounds), fill the interior (solid region -> single outer contour
         # instead of a band with inner+outer), dilate by tool_radius (grow
         # outward), then trace the one remaining contour and un-pad.
-        scale_factor = 25.4 / self.dpi
+        # Actual pixel pitch from the rendered bitmap (pygerber rounds px/mm down).
+        W, H = bitmap.shape[1], bitmap.shape[0]
+        gb_min_x, gb_min_y, gb_max_x, gb_max_y = gerber_bounds
+        scale_x = (gb_max_x - gb_min_x) / (W - 1) if W > 1 else (25.4 / self.dpi)
+        scale_y = (gb_max_y - gb_min_y) / (H - 1) if H > 1 else (25.4 / self.dpi)
+        scale_factor = (scale_x + scale_y) / 2.0
         tool_radius_mm = self.edge_cuts_tool.tool_diameter / 2.0
-        tool_radius_px = tool_radius_mm / scale_factor
+        # Filling the rendered Edge.Cuts line and dilating from its OUTER edge
+        # adds half the line width. Subtract that so the bit centre lands one
+        # tool radius from the Edge.Cuts centreline.
+        line_half_mm = getattr(self, "edge_line_width_mm", 0.0) / 2.0
+        tool_radius_px = (tool_radius_mm - line_half_mm) / scale_factor
         disk_r = max(1, round(tool_radius_px))
         pad = disk_r + 5
         binary = np.pad(binary, pad, mode='constant', constant_values=False)
@@ -887,8 +909,8 @@ class GerberToGcode:
         smoothed = self.smooth_path(largest_contour, tolerance=1.0)
         gb_min_x, gb_min_y, gb_max_x, gb_max_y = gerber_bounds
 
-        outline = [(point[1] * scale_factor + gb_min_x,
-                    gb_max_y - point[0] * scale_factor)
+        outline = [(point[1] * scale_x + gb_min_x,
+                    gb_max_y - point[0] * scale_y)
                    for point in smoothed]
 
         return outline
@@ -1016,41 +1038,65 @@ class GerberToGcode:
         ]
 
         def _bore_at(gx: float, gy: float, diameter: float) -> List[str]:
-            # Helix down at the bit-centre radius, then a flat full circle to clean the floor.
-            # Uses small G1 segments instead of G2 arcs to avoid firmware arc segmentation.
-            r = (diameter - tool.tool_diameter) / 2.0
-            cmds = [f"; Bore {diameter:.2f} mm (helix r={r:.4f}, segmented)",
-                    f"G0 X{gx + r:.4f} Y{gy:.4f} Z{self.safe_height}",
-                    f"G1 Z0 F{tool.plunge_rate}"]
-            
-            # Calculate segments for 0.1mm chord length
+            # A single helix at (D-d)/2 only cuts an annulus. For D > 2d that
+            # leaves a central pillar, so use concentric full-depth passes at
+            # radii down to the bit radius (the bit then reaches the centre).
+            # Uses small G1 segments instead of G2 arcs to avoid firmware arc
+            # segmentation. Each pass gets a flat final circle to clean its floor.
             import math
-            circumference = 2 * math.pi * r
-            num_segments = max(6, int(math.ceil(circumference / 0.1)))
-            angle_step = 2 * math.pi / num_segments
-            
-            depth = 0.0
-            while depth < tool.total_depth:
-                prev = depth
-                depth = min(depth + tool.bore_step_down, tool.total_depth)
-                # Helix down one revolution with segments
+            bit_radius = tool.tool_diameter / 2.0
+            r_outer = (diameter - tool.tool_diameter) / 2.0
+            step = tool.tool_diameter * 0.5
+            radii = []
+            r = r_outer
+            while True:
+                radii.append(r)
+                if r <= bit_radius + 1e-9:
+                    break
+                r = max(0.0, r - step)
+
+            cmds = [
+                f"; Bore {diameter:.2f} mm "
+                f"(radii={','.join('%.3f' % rr for rr in radii)})"
+            ]
+            for r in radii:
+                circumference = 2 * math.pi * r
+                num_segments = max(6, int(math.ceil(circumference / 0.1)))
+                angle_step = 2 * math.pi / num_segments
+                cmds += [
+                    f"G0 X{gx + r:.4f} Y{gy:.4f} Z{self.safe_height}",
+                    f"G1 Z0 F{tool.plunge_rate}",
+                ]
+
+                depth = 0.0
+                while depth < tool.total_depth:
+                    prev = depth
+                    depth = min(depth + tool.bore_step_down, tool.total_depth)
+                    # Helix down one revolution with segments
+                    for i in range(1, num_segments + 1):
+                        angle = i * angle_step
+                        x = gx + r * math.cos(angle)
+                        y = gy + r * math.sin(angle)
+                        # Z descends gradually during the revolution (prev -> depth)
+                        z = -(prev + (depth - prev) * i / num_segments)
+                        cmds.append(f"G1 X{x:.4f} Y{y:.4f} Z{z:.4f} F{tool.feed_rate}")
+
+                # Final flat circle at bottom to clean this pass's floor
                 for i in range(1, num_segments + 1):
                     angle = i * angle_step
                     x = gx + r * math.cos(angle)
                     y = gy + r * math.sin(angle)
-                    # Z descends gradually during the revolution (prev -> depth)
-                    z = -(prev + (depth - prev) * i / num_segments)
-                    cmds.append(f"G1 X{x:.4f} Y{y:.4f} Z{z:.4f} F{tool.feed_rate}")
-            
-            # Final flat circle at bottom to clean floor
-            for i in range(1, num_segments + 1):
-                angle = i * angle_step
-                x = gx + r * math.cos(angle)
-                y = gy + r * math.sin(angle)
-                cmds.append(f"G1 X{x:.4f} Y{y:.4f} Z{-tool.total_depth:.4f} F{tool.feed_rate}")
-            
-            cmds.append(f"G1 X{gx:.4f} Y{gy:.4f} F{tool.feed_rate}")  # off the wall before retract
-            cmds.append(f"G0 Z{self.safe_height}")
+                    cmds.append(f"G1 X{x:.4f} Y{y:.4f} Z{-tool.total_depth:.4f} F{tool.feed_rate}")
+
+                cmds.append(f"G0 Z{self.safe_height}")
+
+            # Remove the last tiny centre nub left by the innermost tangent pass.
+            if len(radii) > 1:
+                cmds += [
+                    f"G0 X{gx:.4f} Y{gy:.4f} Z{self.safe_height}",
+                    f"G1 Z{-tool.total_depth:.4f} F{tool.plunge_rate}",
+                    f"G0 Z{self.safe_height}",
+                ]
             return cmds
 
         def _drill_at(gx: float, gy: float, diameter: float = None) -> List[str]:
@@ -1165,6 +1211,7 @@ class GerberToGcode:
         # and all layers share the same coordinate origin).
         if edge_cuts_file and os.path.exists(edge_cuts_file):
             print(f"\n=== Processing edge cuts: {edge_cuts_file} ===")
+            self.edge_line_width_mm = self._read_edge_line_width(edge_cuts_file)
             ec_bitmap, ec_gerber_bounds = self.render_gerber_to_bitmap(edge_cuts_file)
             self.board_outline = self.parse_edge_cuts_to_outline(ec_bitmap, ec_gerber_bounds)
             print(f"Loaded board outline with {len(self.board_outline)} points")

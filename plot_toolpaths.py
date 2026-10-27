@@ -36,13 +36,26 @@ def parse(path):
 
 
 def drills(path):
-    pts, cur = [], (0, 0)
+    """One point per hole, at the true hole centre.
+
+    A bore is a helix, so marking every cutting point makes the drill blob look
+    offset (and a large bore look like a ring). The mean of one contiguous cut
+    block is the commanded helix centre; for a plunge it is the plunge point.
+    """
+    pts, block, cur = [], [], (0, 0)
     for line in open(path):
         m = dict(re.findall(r'([XYZ])(-?\d+\.?\d*)', line.split(';')[0]))
         if 'X' in m or 'Y' in m:
             cur = (float(m.get('X', cur[0])), float(m.get('Y', cur[1])))
-        if 'Z' in m and float(m['Z']) < 0:
-            pts.append(cur)
+        if 'Z' in m and float(m['Z']) >= 0 and block:
+            pts.append((sum(p[0] for p in block) / len(block),
+                        sum(p[1] for p in block) / len(block)))
+            block = []
+        elif 'Z' in m and float(m['Z']) < 0:
+            block.append(cur)
+    if block:
+        pts.append((sum(p[0] for p in block) / len(block),
+                    sum(p[1] for p in block) / len(block)))
     return pts
 
 

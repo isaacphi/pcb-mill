@@ -42,3 +42,7 @@ form.jog { margin: .6rem 0; } form.jog button { padding: .3rem .7rem; margin: 0 
 #found li { font-size: .9rem; }
 label.link { color: #446; text-decoration: underline; cursor: pointer; }
 table.jobs td { padding: .3rem .8rem; }
+form.rename { margin: -.4rem 0 1rem; }
+form.rename input { font-size: .95rem; padding: .25rem .5rem; width: 18em; }
+form.rename button { font-size: .8rem; padding: .25rem .7rem; }
+#nameRow input { font-size: 1rem; padding: .3rem .5rem; min-width: 18em; }

@@ -3,43 +3,54 @@
 Run locally:   uv run uvicorn web.app:app --port 8090
 On the Pi:     MOONRAKER_URL=http://127.0.0.1:7125 uv run uvicorn web.app:app --host 0.0.0.0 --port 8090
 
-Beyond conversion the job page walks the machine workflow, one button per
-step, reading live state from Klipper (so a restart or a moved board shows up
-immediately): home -> find the copper (PCB_DATUM) -> mesh the cut area
-(PCB_MESH, ~10 mm spacing) -> send the job to Fluidd. All motion logic lives
-in Klipper macros (klipper/printer.cfg); this app only sequences them and
-refuses to proceed when the live state doesn't match. The job file starts
-with PCB_READY, which aborts the cut unless the session has a datum and a
-mesh covering the job. Jogging and the real e-stop stay in Fluidd.
+Beyond conversion the job page walks the machine workflow one step at a time,
+reading live state from Klipper: setup/home -> attach board -> find copper
+(PCB_DATUM) -> mesh (PCB_MESH) -> send. All motion logic lives in Klipper macros
+(klipper/printer.cfg); this app only sequences it and refuses to proceed when
+the live state does not match. Job files start with PCB_READY, which aborts the
+cut unless the session has a datum and a mesh covering the job.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
 import time
-import uuid
 from pathlib import Path
+from threading import RLock
 
+import httpx
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import config_render, detect, excellon, moonraker, probe
 
 ROOT = Path(__file__).resolve().parent.parent
-JOBS = Path(__import__("os").environ.get("PCB_MILL_JOBS", ROOT / "web_jobs"))
+JOBS = Path(os.environ.get("PCB_MILL_JOBS", ROOT / "web_jobs"))
 JOBS.mkdir(exist_ok=True)
+
+# Loading position: 100 mm forward of the board's bottom edge (job Y=100).
+BOARD_LOAD_Y = 100.0
+# PCB_DATUM search window. The old 3 mm was too short from the G28 park height.
+DATUM_DEPTH_MM = 25.0
 
 app = FastAPI(title="pcb-mill")
 templates = Jinja2Templates(Path(__file__).parent / "templates")
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
-ALLOWED = {".gbr", ".gm1", ".gbl", ".gtl", ".drl", ".txt", ".xln"}
+ALLOWED = {".gbr", ".gm1", ".gko", ".gbl", ".gtl", ".drl", ".txt", ".xln"}
+
+
+def _clean_title(value: str | None, fallback: str) -> str:
+    """Keep a user-supplied job name readable but bounded."""
+    title = (value or "").strip()
+    return (title[:120].strip() or fallback)
 
 
 def _save(job: Path, upload: UploadFile, name: str) -> Path | None:
@@ -52,15 +63,24 @@ def _save(job: Path, upload: UploadFile, name: str) -> Path | None:
     return dest
 
 
+_STATUS_LOCK = RLock()
+
+
 def _status(job: Path) -> dict:
     f = job / "status.json"
-    return json.loads(f.read_text()) if f.exists() else {"state": "unknown"}
+    with _STATUS_LOCK:
+        return json.loads(f.read_text()) if f.exists() else {"state": "unknown"}
 
 
 def _set_status(job: Path, **kw):
-    st = _status(job)
-    st.update(kw)
-    (job / "status.json").write_text(json.dumps(st, indent=2))
+    """Merge + atomically replace status.json; htmx polling and phases race otherwise."""
+    f = job / "status.json"
+    tmp = job / "status.json.tmp"
+    with _STATUS_LOCK:
+        st = json.loads(f.read_text()) if f.exists() else {"state": "unknown"}
+        st.update(kw)
+        tmp.write_text(json.dumps(st, indent=2))
+        os.replace(tmp, f)
 
 
 MIRROR_RE = re.compile(r"mirror axis X = ([\d.]+)")
@@ -112,8 +132,7 @@ async def _convert(job: Path, copper: str, side: str, edge: str, drill: str, con
 async def index(request: Request):
     inv = config_render.load_inventory()
     return templates.TemplateResponse(request=request, name="index.html", context={
-        "inv": inv, "moonraker": moonraker.available(), "fluidd": moonraker.fluidd(),
-        "recent": _recent_jobs()})
+        "inv": inv, "recent": _recent_jobs()})
 
 
 def _recent_jobs(limit: int = 30) -> list[dict]:
@@ -132,14 +151,17 @@ def _recent_jobs(limit: int = 30) -> list[dict]:
 
 @app.post("/jobs")
 async def create_job(
+    request: Request,
     copper: UploadFile = File(...),
     edge: UploadFile = File(...),
     drill: UploadFile = File(...),
     drill2: UploadFile | None = File(None),
     side: str = Form("bottom"),
-    request: Request = None,
+    title: str = Form(""),
 ):
-    title = detect.board_name([f.filename for f in (copper, edge, drill) if f and f.filename])
+    if side not in ("top", "bottom"):
+        raise HTTPException(400, "side must be 'top' or 'bottom'")
+    title = _clean_title(title, detect.board_name([copper.filename]))
     job = _new_job_dir(title)
 
     c = _save(job, copper, "copper" + Path(copper.filename).suffix.lower())
@@ -150,19 +172,27 @@ async def create_job(
 
 
 def _new_job_dir(title: str) -> Path:
-    job = JOBS / (time.strftime("%Y%m%d-%H%M%S-") + detect.slug(title))
-    job.mkdir(parents=True)
-    return job
+    base = JOBS / (time.strftime("%Y%m%d-%H%M%S-") + detect.slug(title))
+    for n in range(1, 100):
+        job = base if n == 1 else base.with_name(f"{base.name}-{n}")
+        try:
+            job.mkdir(parents=True)
+            return job
+        except FileExistsError:
+            continue
+    raise HTTPException(500, "could not allocate a job directory")
 
 
 @app.post("/upload")
-async def upload(request: Request, files: list[UploadFile] = File(...), side: str = Form("")):
-    """Drag-and-drop entry: any pile of KiCad outputs; roles come from the files themselves."""
+async def upload(request: Request, files: list[UploadFile] = File(...),
+                 side: str = Form(""), title: str = Form("")):
+    """Drag-and-drop entry: any pile of Gerber/drill outputs; roles come from the files themselves."""
     blobs = [(f.filename, await f.read()) for f in files if f.filename]
     try:
         a = detect.assign(blobs, side or None)
     except detect.DetectError as e:
         raise HTTPException(400, str(e))
+    a["title"] = _clean_title(title, a["title"])
     job = _new_job_dir(a["title"])
 
     def put(item, stem):
@@ -219,7 +249,8 @@ def _live() -> dict | None:
         return None
     try:
         return moonraker.machine_state()
-    except Exception:  # noqa: BLE001 - Klipper down: page still renders, steps show "offline"
+    except (httpx.HTTPError, RuntimeError, KeyError, ValueError):
+        # Klipper down/unexpected object shape: render the page as offline.
         return None
 
 
@@ -271,10 +302,12 @@ def _job_context(request: Request, name: str) -> dict:
             at_x = ms["position"][0] - ms["origin"][0]
             at_y = ms["position"][1] - ms["origin"][1]
             steps["at_start"] = abs(at_x - plan.job[0]) < 0.3 and abs(at_y - plan.job[1]) < 0.3
+    print_state = (ms or {}).get("print", {}).get("state", "standby")
     return {"request": request, "name": name, "st": st, "log": log, "elapsed": elapsed,
-            "moonraker": moonraker.available(), "moonraker_control": moonraker.control_available(),
+            "moonraker_control": moonraker.control_available(),
             "fluidd": moonraker.fluidd(), "ms": ms, "plan": plan, "steps": steps,
-            "phase": st.get("phase")}
+            "phase": st.get("phase"), "printing": print_state in ("printing", "paused"),
+            "datum_depth": DATUM_DEPTH_MM}
 
 
 @app.get("/jobs/{name}", response_class=HTMLResponse)
@@ -286,6 +319,76 @@ async def job_page(request: Request, name: str):
 async def job_fragment(request: Request, name: str):
     """htmx poll target: just the dynamic body of the job page."""
     return templates.TemplateResponse(request=request, name="_job_body.html", context=_job_context(request, name))
+
+
+@app.post("/jobs/{name}/rename")
+async def rename_job(name: str, title: str = Form(...)):
+    job = JOBS / name
+    if not job.is_dir():
+        raise HTTPException(404)
+    st = _status(job)
+    _set_status(job, title=_clean_title(title, st.get("title") or name))
+    return RedirectResponse(f"/jobs/{name}", status_code=303)
+
+
+@app.post("/jobs/{name}/stop")
+async def stop_job(request: Request, name: str):
+    """Slow stop: ask Klipper's virtual SD job to cancel at the next move."""
+    job = JOBS / name
+    if not job.is_dir():
+        raise HTTPException(404)
+    if not moonraker.control_available():
+        raise HTTPException(409, "Moonraker control not available")
+    try:
+        await asyncio.to_thread(moonraker.cancel)
+    except moonraker.KlipperError as e:
+        raise HTTPException(409, str(e))
+    return _respond(request, name)
+
+
+@app.get("/jobs/{name}/combined.gcode")
+async def combined_export(name: str):
+    """Download isolation + drill + edge as one runnable file for any converted job.
+
+    If the job was already sent, reuse the exact run files. Otherwise build them
+    from the raw .nc files using the live datum/mesh state. Intermediate
+    M5/park/M2 footers are stripped; only the final footer remains.
+    """
+    job = JOBS / name
+    if not job.is_dir():
+        raise HTTPException(404)
+    st = _status(job)
+    if st.get("state") != "done":
+        raise HTTPException(409, "job is not converted yet")
+    names = ("1_isolation.gcode", "2_drill.gcode", "3_edge.gcode")
+    files = [job / "out" / n for n in names]
+    if not all(f.exists() for f in files):
+        ms = _live()
+        plan = _plan_for(st, ms)
+        if plan is None:
+            raise HTTPException(409, "Klipper is not reachable / board origin not set; send the job first")
+        use_mesh = bool(ms and _mesh_covers(plan, ms))
+        mesh_header = use_mesh or not st.get("mesh_skipped")
+        _prepare_run_files(job, plan, mesh_header, float(st.get("extra_depth") or 0))
+        files = [job / "out" / n for n in names]
+        if not all(f.exists() for f in files):
+            raise HTTPException(409, "no generated operations found")
+    parts = []
+    for i, f in enumerate(files):
+        lines = f.read_text().splitlines()
+        if i < len(files) - 1:
+            cut = max((i for i, line in enumerate(lines) if line.strip() == "M5"), default=-1)
+            if cut >= 0:
+                lines = lines[:cut]
+        parts.append("\n".join(lines).rstrip())
+    body = "\n\n".join(parts)
+    load = f"G0 X0 Y{BOARD_LOAD_Y:g} F3000"
+    if not body.rstrip().endswith(load):
+        body = body.rstrip() + "\n" + load
+    body += "\n"
+    fn = (st.get("slug") or detect.slug(name)) + "-combined.gcode"
+    return Response(body, media_type="text/plain",
+                    headers={"Content-Disposition": f'attachment; filename="{fn}"'})
 
 
 @app.get("/jobs/{name}/files/{path:path}")
@@ -309,11 +412,16 @@ async def _run_phase(job: Path, phase: str, script: str, timeout: float):
                             "started": time.time()})
     try:
         await asyncio.to_thread(moonraker.gcode, script, timeout)
-    except Exception as e:  # noqa: BLE001 - Klipper's message goes straight to the UI
+    except (httpx.HTTPError, RuntimeError) as e:
         _set_status(job, phase={"name": phase, "state": "error", "script": script,
                                 "error": str(e)[:400]})
     else:
-        _set_status(job, phase={"name": phase, "state": "done", "script": script})
+        done = {"phase": {"name": phase, "state": "done", "script": script}}
+        if phase == "setup":
+            done.update(setup_done=True, board_ready=False, mesh_skipped=False)
+        if phase == "mesh":
+            done.update(mesh_skipped=False)
+        _set_status(job, **done)
     finally:
         _RUNNING.discard(job.name)
 
@@ -355,15 +463,35 @@ async def set_origin(request: Request, name: str):
     return _respond(request, name)
 
 
+@app.post("/jobs/{name}/setup")
+async def setup_board(request: Request, name: str):
+    """Home, then move to the board-loading position (job Y=100)."""
+    job, _ = _job_ready(name)
+    _set_status(job, setup_done=False, board_ready=False, mesh_skipped=False)
+    # G28 leaves us at the board origin (job 0,0); job Y=100 is board bottom + 100 mm.
+    script = f"M5\nG28\nG90\nG0 Y{BOARD_LOAD_Y:.3f} F3000"
+    return _start(request, job, "setup", script, timeout=180)
+
+
+@app.post("/jobs/{name}/board-ready")
+async def board_ready(request: Request, name: str):
+    job, st = _job_ready(name)
+    if not st.get("setup_done"):
+        raise HTTPException(409, "run the board setup first")
+    _set_status(job, board_ready=True)
+    return _respond(request, name)
+
+
 @app.post("/jobs/{name}/home")
 async def home(request: Request, name: str):
     job, _ = _job_ready(name)
+    _set_status(job, mesh_skipped=False)
     return _start(request, job, "home", "G28", timeout=180)
 
 
 @app.post("/jobs/{name}/datum")
 async def datum(request: Request, name: str):
-    """Find the copper under the bit (bounded 3 mm search; run again if no contact)."""
+    """Find the copper under the bit (bounded search; run again if no contact)."""
     job, _ = _job_ready(name)
     ms = _live()
     if not ms or not all(a in ms["homed"] for a in "xyz"):
@@ -372,7 +500,9 @@ async def datum(request: Request, name: str):
     if plan is None:
         raise HTTPException(409, "board origin not set")
     # the macro moves to the start point first (a no-op if the bit is already there)
-    return _start(request, job, "datum", f"PCB_DATUM X={plan.job[0]:g} Y={plan.job[1]:g} DEPTH=3", timeout=90)
+    return _start(request, job, "datum",
+                  f"PCB_DATUM X={plan.job[0]:g} Y={plan.job[1]:g} DEPTH={DATUM_DEPTH_MM:g}",
+                  timeout=120)
 
 
 @app.post("/jobs/{name}/start")
@@ -399,17 +529,22 @@ async def mesh(request: Request, name: str):
     return _start(request, job, "mesh", plan.gcode(), timeout=plan.seconds * 2 + 120)
 
 
+@app.post("/jobs/{name}/skip-mesh")
+async def skip_mesh(request: Request, name: str):
+    """Use the datum plane without a height map (flat-board shortcut)."""
+    job, _ = _job_ready(name)
+    ms = _live()
+    if not ms or not ms["datum_done"]:
+        raise HTTPException(409, "find the copper (datum) first")
+    _set_status(job, mesh_skipped=True)
+    return _respond(request, name)
+
+
 @app.post("/jobs/{name}/lift")
 async def lift(request: Request, name: str):
     """MILL_LIFT: raise Z, return to the board origin. For getting out of trouble."""
     job, _ = _job_ready(name)
     return _start(request, job, "lift", "MILL_LIFT", timeout=60)
-
-
-@app.post("/jobs/{name}/estop")
-async def estop(request: Request, name: str):
-    moonraker.estop()
-    return _respond(request, name)
 
 
 @app.post("/jobs/{name}/jog")
@@ -431,21 +566,9 @@ async def jog(request: Request, name: str, dz: float = Form(...)):
 RUN_FILES = (("isolation.nc", "isolation", False), ("drill.nc", "drill", True), ("edge.nc", "edge", True))
 
 
-@app.post("/jobs/{name}/send")
-async def send_to_machine(request: Request, name: str, extra_depth: float = Form(0.0)):
-    """Upload isolation, drill and edge jobs (each with a PCB_READY header) into
-    one Fluidd folder named after the board, once datum + mesh are live."""
-    if not 0 <= extra_depth <= 0.3:
-        raise HTTPException(400, "extra_depth must be 0..0.3 mm")
-    job, st = _job_ready(name)
-    ms = _live()
-    plan = _plan_for(st, ms)
-    if not (ms and ms["datum_done"] and plan and _mesh_covers(plan, ms)):
-        raise HTTPException(409, "datum and mesh must be done for this board position first")
+def _prepare_run_files(job: Path, plan, use_mesh: bool, extra_depth: float = 0.0) -> list[str]:
+    """Build the three Fluidd run files; return their names."""
     out = job / "out"
-    if not (out / "isolation.nc").exists():
-        raise HTTPException(409, "isolation.nc missing (double-sided jobs are not supported yet)")
-    folder = st.get("slug") or detect.slug(name)
     inv = config_render.load_inventory()["machine"]
     sent = []
     for src_name, op, deep in RUN_FILES:
@@ -457,9 +580,37 @@ async def send_to_machine(request: Request, name: str, extra_depth: float = Form
         if op == "isolation":
             body = probe.deepen(body, extra_depth)       # isolation only: drill/edge depths are fixed
         run = out / f"{len(sent) + 1}_{op}.gcode"        # Klipper only prints .gcode/.g/.gco
-        run.write_text(probe.with_header(body, plan.job, deep))
-        moonraker.upload(run, subdir=folder)
+        text = probe.with_header(body, plan.job, deep, mesh=use_mesh).rstrip()
+        text += f"\nG0 X0 Y{BOARD_LOAD_Y:g} F3000\n"       # board loading position
+        run.write_text(text)
         sent.append(run.name)
+    return sent
+
+
+@app.post("/jobs/{name}/send")
+async def send_to_machine(request: Request, name: str, extra_depth: float = Form(0.0),
+                           spindle_on: bool = Form(False), clips_off: bool = Form(False)):
+    """Upload isolation, drill and edge jobs (each with a PCB_READY header) into
+    one Fluidd folder named after the board, once datum + mesh are live."""
+    if not 0 <= extra_depth <= 0.3:
+        raise HTTPException(400, "extra_depth must be 0..0.3 mm")
+    if not (spindle_on and clips_off):
+        raise HTTPException(409, "confirm spindle power is ON and probe clips are OFF before sending")
+    job, st = _job_ready(name)
+    ms = _live()
+    plan = _plan_for(st, ms)
+    use_mesh = bool(plan and _mesh_covers(plan, ms))
+    mesh_skipped = bool(st.get("mesh_skipped"))
+    if not (ms and ms["datum_done"] and plan and plan.fits and (use_mesh or mesh_skipped)):
+        raise HTTPException(409, "datum and mesh must be done for this board position first "
+                                 "(or skip mesh explicitly)")
+    out = job / "out"
+    if not (out / "isolation.nc").exists():
+        raise HTTPException(409, "isolation.nc missing (double-sided jobs are not supported yet)")
+    folder = st.get("slug") or detect.slug(name)
+    sent = _prepare_run_files(job, plan, use_mesh, extra_depth)
+    for run_name in sent:
+        moonraker.upload(out / run_name, subdir=folder)
     _set_status(job, sent=sent, sent_folder=folder, extra_depth=extra_depth)
     # straight on to Fluidd's job list: that is where the cut is started
     target = f"{moonraker.fluidd()}/#/jobs"

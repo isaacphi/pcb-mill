@@ -1,0 +1,98 @@
+--- a/gerber_to_gcode.py
++++ b/gerber_to_gcode.py
+@@ -1016,41 +1016,65 @@
+         ]
+ 
+         def _bore_at(gx: float, gy: float, diameter: float) -> List[str]:
+-            # Helix down at the bit-centre radius, then a flat full circle to clean the floor.
+-            # Uses small G1 segments instead of G2 arcs to avoid firmware arc segmentation.
+-            r = (diameter - tool.tool_diameter) / 2.0
+-            cmds = [f"; Bore {diameter:.2f} mm (helix r={r:.4f}, segmented)",
+-                    f"G0 X{gx + r:.4f} Y{gy:.4f} Z{self.safe_height}",
+-                    f"G1 Z0 F{tool.plunge_rate}"]
+-            
+-            # Calculate segments for 0.1mm chord length
++            # A single helix at (D-d)/2 only cuts an annulus. For D > 2d that
++            # leaves a central pillar, so use concentric full-depth passes at
++            # radii down to the bit radius (the bit then reaches the centre).
++            # Uses small G1 segments instead of G2 arcs to avoid firmware arc
++            # segmentation. Each pass gets a flat final circle to clean its floor.
+             import math
+-            circumference = 2 * math.pi * r
+-            num_segments = max(6, int(math.ceil(circumference / 0.1)))
+-            angle_step = 2 * math.pi / num_segments
+-            
+-            depth = 0.0
+-            while depth < tool.total_depth:
+-                prev = depth
+-                depth = min(depth + tool.bore_step_down, tool.total_depth)
+-                # Helix down one revolution with segments
++            bit_radius = tool.tool_diameter / 2.0
++            r_outer = (diameter - tool.tool_diameter) / 2.0
++            step = tool.tool_diameter * 0.5
++            radii = []
++            r = r_outer
++            while True:
++                radii.append(r)
++                if r <= bit_radius + 1e-9:
++                    break
++                r = max(0.0, r - step)
++
++            cmds = [
++                f"; Bore {diameter:.2f} mm "
++                f"(radii={','.join('%.3f' % rr for rr in radii)})"
++            ]
++            for r in radii:
++                circumference = 2 * math.pi * r
++                num_segments = max(6, int(math.ceil(circumference / 0.1)))
++                angle_step = 2 * math.pi / num_segments
++                cmds += [
++                    f"G0 X{gx + r:.4f} Y{gy:.4f} Z{self.safe_height}",
++                    f"G1 Z0 F{tool.plunge_rate}",
++                ]
++
++                depth = 0.0
++                while depth < tool.total_depth:
++                    prev = depth
++                    depth = min(depth + tool.bore_step_down, tool.total_depth)
++                    # Helix down one revolution with segments
++                    for i in range(1, num_segments + 1):
++                        angle = i * angle_step
++                        x = gx + r * math.cos(angle)
++                        y = gy + r * math.sin(angle)
++                        # Z descends gradually during the revolution (prev -> depth)
++                        z = -(prev + (depth - prev) * i / num_segments)
++                        cmds.append(f"G1 X{x:.4f} Y{y:.4f} Z{z:.4f} F{tool.feed_rate}")
++
++                # Final flat circle at bottom to clean this pass's floor
+                 for i in range(1, num_segments + 1):
+                     angle = i * angle_step
+                     x = gx + r * math.cos(angle)
+                     y = gy + r * math.sin(angle)
+-                    # Z descends gradually during the revolution (prev -> depth)
+-                    z = -(prev + (depth - prev) * i / num_segments)
+-                    cmds.append(f"G1 X{x:.4f} Y{y:.4f} Z{z:.4f} F{tool.feed_rate}")
+-            
+-            # Final flat circle at bottom to clean floor
+-            for i in range(1, num_segments + 1):
+-                angle = i * angle_step
+-                x = gx + r * math.cos(angle)
+-                y = gy + r * math.sin(angle)
+-                cmds.append(f"G1 X{x:.4f} Y{y:.4f} Z{-tool.total_depth:.4f} F{tool.feed_rate}")
+-            
+-            cmds.append(f"G1 X{gx:.4f} Y{gy:.4f} F{tool.feed_rate}")  # off the wall before retract
+-            cmds.append(f"G0 Z{self.safe_height}")
++                    cmds.append(f"G1 X{x:.4f} Y{y:.4f} Z{-tool.total_depth:.4f} F{tool.feed_rate}")
++
++                cmds.append(f"G0 Z{self.safe_height}")
++
++            # Remove the last tiny centre nub left by the innermost tangent pass.
++            if len(radii) > 1:
++                cmds += [
++                    f"G0 X{gx:.4f} Y{gy:.4f} Z{self.safe_height}",
++                    f"G1 Z{-tool.total_depth:.4f} F{tool.plunge_rate}",
++                    f"G0 Z{self.safe_height}",
++                ]
+             return cmds
+ 
+         def _drill_at(gx: float, gy: float, diameter: float = None) -> List[str]:

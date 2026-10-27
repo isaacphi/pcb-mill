@@ -9,6 +9,10 @@
 <body>
 <p><a href="/">← jobs</a></p>
 <h1>{{ st.title or name }} <span class="dim">{{ st.state }}{% if st.side %} · {{ st.side }} copper{% endif %}</span></h1>
+<form class="rename" method="post" action="/jobs/{{ name }}/rename">
+  <label>Job name <input name="title" value="{{ st.title or name }}" maxlength="120" required></label>
+  <button class="secondary">Rename</button>
+</form>
 <p id="flash" class="err"></p>
 {# poll, but never while a field is being edited #}
 <div id="job-body" hx-get="/jobs/{{ name }}/fragment" hx-trigger="every 2s [!document.activeElement || document.activeElement.tagName !== 'INPUT']" hx-swap="innerHTML">

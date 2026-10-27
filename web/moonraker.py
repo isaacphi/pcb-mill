@@ -58,6 +58,13 @@ class KlipperError(RuntimeError):
     """A G-code script failed inside Klipper (message is Klipper's own)."""
 
 
+def _error_message(r: httpx.Response) -> str:
+    try:
+        return r.json()["error"]["message"]
+    except (ValueError, KeyError, TypeError):
+        return f"HTTP {r.status_code}"
+
+
 def gcode(script: str, timeout: float = 15) -> dict:
     """Run G-code and block until Klipper finishes it. Raises KlipperError."""
     base = _api()
@@ -65,19 +72,18 @@ def gcode(script: str, timeout: float = 15) -> dict:
         raise RuntimeError("Moonraker control not available")
     r = httpx.post(f"{base}/printer/gcode/script", data={"script": script}, timeout=timeout)
     if r.status_code >= 400:
-        try:
-            msg = r.json()["error"]["message"]
-        except Exception:  # noqa: BLE001
-            msg = f"HTTP {r.status_code}"
-        raise KlipperError(msg)
+        raise KlipperError(_error_message(r))
     return r.json()
 
 
-def estop() -> None:
+def cancel() -> None:
+    """Normal stop: Klipper cancels the virtual-SD job after the current move."""
     base = _api()
     if not base:
         raise RuntimeError("Moonraker control not available")
-    httpx.post(f"{base}/printer/emergency_stop", timeout=5)
+    r = httpx.post(f"{base}/printer/print/cancel", timeout=10)
+    if r.status_code >= 400:
+        raise KlipperError(_error_message(r))
 
 
 def query(objects: str) -> dict:
@@ -89,26 +95,8 @@ def query(objects: str) -> dict:
     return r.json()["result"]["status"]
 
 
-def toolhead_xy() -> tuple[float, float]:
-    p = query("toolhead")["toolhead"]["position"]
-    return float(p[0]), float(p[1])
-
-
-def bed_mesh() -> dict:
-    return query("bed_mesh")["bed_mesh"]
-
-
-def printer_state() -> str:
-    base = _api()
-    if not base:
-        raise RuntimeError("Moonraker control not available")
-    r = httpx.get(f"{base}/printer/info", timeout=15)
-    r.raise_for_status()
-    return r.json()["result"]["state"]
-
-
 def fluidd() -> str:
-    return os.environ.get("FLUIDD_URL", "http://anycubic-octopi.local:8080").rstrip("/")
+    return os.environ.get("FLUIDD_URL", "http://pcb-mill.local:8080").rstrip("/")
 
 
 def upload(path: Path, subdir: str = "") -> dict:
@@ -136,7 +124,7 @@ def upload(path: Path, subdir: str = "") -> dict:
 
 def machine_state() -> dict:
     """Live Klipper session facts the workflow depends on (read-only)."""
-    s = query("toolhead&bed_mesh&gcode_macro%20PCB_DATUM&save_variables&webhooks")
+    s = query("toolhead&bed_mesh&gcode_macro%20PCB_DATUM&save_variables&webhooks&print_stats")
     v = s["save_variables"]["variables"]
     mesh = s["bed_mesh"]
     origin = None
@@ -146,6 +134,9 @@ def machine_state() -> dict:
     flat = [z for row in matrix for z in row]
     return {
         "klipper": s["webhooks"]["state"],
+        "print": {
+            "state": s["print_stats"]["state"],
+        },
         "homed": s["toolhead"]["homed_axes"],
         "position": s["toolhead"]["position"][:3],
         "origin": origin,

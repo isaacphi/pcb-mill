@@ -22,6 +22,8 @@ RestartSec=5
 Nice=19
 IOSchedulingClass=idle
 MemoryMax=450M
+# Never let a conversion take all four cores: leave two for OctoPrint/Klipper.
+CPUQuota=200%
 
 [Install]
 WantedBy=multi-user.target

@@ -51,6 +51,7 @@ def fake_printer(homed="xyz", datum_done=1, profile="default", pos=(26.0, 30.0, 
         "gcode_move": {"gcode_position": list(gcode_pos),
                        "homing_origin": [0.0, 0.0, deep if offz is None else offz, 0.0]},
         "gcode_macro PCB_DATUM": {"done": datum_done},
+        "gcode_macro PCB_READY": {"no_mesh": 0},
         "bed_mesh": {"profile_name": profile, "mesh_min": list(mesh_min), "mesh_max": list(mesh_max),
                      "probed_matrix": [[0.0, 0.1], [0.05, 0.2]]},
         "probe": {"last_probe_position": [26.0, 30.0, 0.44]},
@@ -84,10 +85,16 @@ def test_datum_search_window_never_exceeds_depth():
     assert "G28" not in " ".join(lines)
 
 
-@pytest.mark.parametrize("depth", ["0", "-1", "4.5", "10"])
+@pytest.mark.parametrize("depth", ["0", "-1", "30.5", "40"])
 def test_datum_rejects_unbounded_depth(depth):
     with pytest.raises(MacroError):
         render("PCB_DATUM", {"DEPTH": depth})
+
+
+def test_datum_accepts_large_search_window():
+    lines, _ = render("PCB_DATUM", {"DEPTH": "25"})
+    assert "SET_KINEMATIC_POSITION Z=24.5" in lines
+    assert lines.index("SET_KINEMATIC_POSITION Z=24.5") < lines.index("PROBE SAMPLES=1")
 
 
 def test_datum_requires_homing():
@@ -181,6 +188,19 @@ def test_ready_refuses(kw, match):
 def test_ready_needs_extents():
     with pytest.raises(MacroError, match="extents"):
         render("PCB_READY", {})
+
+
+def test_ready_allows_skipping_mesh():
+    lines, infos = render("PCB_READY", {**READY, "MESH": "0"}, fake_printer(profile=""))
+    assert "SET_GCODE_VARIABLE MACRO=PCB_READY VARIABLE=no_mesh VALUE=1" in lines
+    assert any("MESH=0" in i for i in infos)
+
+
+def test_deep_allows_no_mesh_when_skipped():
+    printer = fake_printer(profile="", datum_done=1)
+    printer["gcode_macro PCB_READY"]["no_mesh"] = 1
+    lines, _ = render("PCB_DEEP", printer=printer)
+    assert "SET_GCODE_OFFSET Z=3.0" in lines
 
 
 def test_homing_invalidates_datum_and_mesh_before_moving():

@@ -1,0 +1,39 @@
+--- a/gerber_to_gcode.py
++++ b/gerber_to_gcode.py
+@@ -244,6 +244,15 @@
+             import traceback
+             traceback.print_exc()
+             sys.exit(1)
++
++    def _read_edge_line_width(self, path: str) -> float:
++        """Width of the Edge.Cuts stroke from its Gerber aperture, in mm."""
++        try:
++            text = Path(path).read_text(errors="replace")
++        except OSError:
++            return 0.0
++        widths = [float(m) for m in re.findall(r"%ADD\d+C,([\d.]+)\*%", text)]
++        return max(widths) if widths else 0.0
+ 
+     def smooth_path(self, path: np.ndarray, tolerance: float = 0.5) -> np.ndarray:
+         """Smooth a path using Douglas-Peucker algorithm"""
+@@ -875,7 +884,11 @@
+         scale_y = (gb_max_y - gb_min_y) / (H - 1) if H > 1 else (25.4 / self.dpi)
+         scale_factor = (scale_x + scale_y) / 2.0
+         tool_radius_mm = self.edge_cuts_tool.tool_diameter / 2.0
+-        tool_radius_px = tool_radius_mm / scale_factor
++        # Filling the rendered Edge.Cuts line and dilating from its OUTER edge
++        # adds half the line width. Subtract that so the bit centre lands one
++        # tool radius from the Edge.Cuts centreline.
++        line_half_mm = getattr(self, "edge_line_width_mm", 0.0) / 2.0
++        tool_radius_px = (tool_radius_mm - line_half_mm) / scale_factor
+         disk_r = max(1, round(tool_radius_px))
+         pad = disk_r + 5
+         binary = np.pad(binary, pad, mode='constant', constant_values=False)
+@@ -1198,6 +1211,7 @@
+         # and all layers share the same coordinate origin).
+         if edge_cuts_file and os.path.exists(edge_cuts_file):
+             print(f"\n=== Processing edge cuts: {edge_cuts_file} ===")
++            self.edge_line_width_mm = self._read_edge_line_width(edge_cuts_file)
+             ec_bitmap, ec_gerber_bounds = self.render_gerber_to_bitmap(edge_cuts_file)
+             self.board_outline = self.parse_edge_cuts_to_outline(ec_bitmap, ec_gerber_bounds)
+             print(f"Loaded board outline with {len(self.board_outline)} points")

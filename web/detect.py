@@ -14,17 +14,11 @@ COPPER_TOP, COPPER_BOTTOM, EDGE = "copper_top", "copper_bottom", "edge"
 DRILL_PTH, DRILL_NPTH, DRILL = "drill_pth", "drill_npth", "drill"
 IGNORE = "ignore"
 
-LABELS = {
-    COPPER_TOP: "top copper", COPPER_BOTTOM: "bottom copper", EDGE: "board outline",
-    DRILL_PTH: "drills (plated)", DRILL_NPTH: "drills (non-plated)", DRILL: "drills",
-    IGNORE: "not used",
-}
-
 _TF = re.compile(r"%TF\.FileFunction,([^*%]+)")
 _XLN = re.compile(r";\s*#@!\s*TF\.FileFunction,([^\r\n]+)")
 
 _NAME_RULES = [  # (regex on lower-cased file name, role)
-    (r"-edge_cuts\.(gbr|gm1|gko)$|\.(gm1|gko)$", EDGE),
+    (r"(^|[-_.])(edge|outline|profile)([-_.]|$)|\.(gm1|gko)$", EDGE),
     (r"-f_cu\.(gbr)$|\.gtl$", COPPER_TOP),
     (r"-b_cu\.(gbr)$|\.gbl$", COPPER_BOTTOM),
     (r"-npth\.(drl|xln|txt)$", DRILL_NPTH),
@@ -126,5 +120,7 @@ def assign(files: list[tuple[str, bytes]], side: str | None = None) -> dict:
         "copper": copper, "side": side, "edge": one(EDGE, "board outline (Edge_Cuts)"),
         "drill": drill, "drill2": drill2, "roles": roles,
         "layers": {"top": bool(top), "bottom": bool(bot)},
-        "title": board_name([n for n, _ in files if roles[n] != IGNORE]),
+        # a job is named after its copper Gerber (`board-F_Cu.gbr` -> `board`),
+        # not after whichever file happens to be most common in the pile.
+        "title": board_name([copper[0]]),
     }

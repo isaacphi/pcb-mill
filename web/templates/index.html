@@ -10,9 +10,11 @@
 
 <form id="up" method="post" action="/upload" enctype="multipart/form-data">
   <div id="drop">
-    <b>Drop the KiCad gerbers and drill files here</b>
+    <b>Drop the gerbers and drill files here</b>
     <span class="dim">or <label class="link">choose files<input id="pick" type="file" name="files" multiple hidden></label></span>
     <ul id="found"></ul>
+    <label id="nameRow" hidden>Job name
+      <input id="jobName" name="title" maxlength="120" placeholder="job name"></label>
     <label id="sideRow" hidden>Copper side
       <select name="side"><option value="bottom">bottom</option><option value="top">top</option></select></label>
     <p id="err" class="err"></p>
@@ -47,20 +49,34 @@
 {% else %}<p class="dim">None yet.</p>{% endif %}
 
 <script>
-const NAMES = [[/-edge_cuts\.|\.gm1$|\.gko$/i, "outline"], [/-f_cu\.|\.gtl$/i, "top copper"], [/-b_cu\.|\.gbl$/i, "bottom copper"],
+const NAMES = [[/\.(gm1|gko)$|(^|[-_.])(edge|outline|profile)([-_.]|$)/i, "outline"],
+               [/-f_cu\.|\.gtl$/i, "top copper"], [/-b_cu\.|\.gbl$/i, "bottom copper"],
                [/-npth\./i, "drills (non-plated)"], [/-pth\./i, "drills (plated)"], [/\.(drl|xln)$/i, "drills"]];
+const STEM = /[-_.](f_cu|b_cu|edge_cuts|npth|pth|job|f_mask|b_mask|f_silkscreen|b_silkscreen|f_paste|b_paste|in\d+_cu)\b.*$/i;
 const pick = document.getElementById("pick"), drop = document.getElementById("drop");
 const found = document.getElementById("found"), go = document.getElementById("go");
+const nameRow = document.getElementById("nameRow"), jobName = document.getElementById("jobName");
+let nameTouched = false;
 const guess = n => (NAMES.find(([rx]) => rx.test(n)) || [0, null])[1];
+const boardName = n => {
+  const base = n.split(/[\\/]/).pop();
+  let stem = base.replace(STEM, "");
+  if (stem === base) stem = base.replace(/\.[^.]+$/, "");
+  return stem.trim();
+};
 
 function show() {
   const roles = [...pick.files].map(f => [f.name, guess(f.name)]);
   found.innerHTML = roles.map(([n, r]) => `<li class="${r ? "ok" : "dim"}">${n} <span class="dim">${r || "ignored"}</span></li>`).join("");
   const has = k => roles.some(([, r]) => r && r.includes(k));
+  const copper = roles.find(([, r]) => r && r.includes("copper"));
+  nameRow.hidden = !copper;
+  if (copper && !nameTouched) jobName.value = boardName(copper[0]);
   document.getElementById("sideRow").hidden = !(has("top copper") && has("bottom copper"));
   go.disabled = !(has("copper") && has("outline") && has("drills"));
   document.getElementById("err").textContent = "";
 }
+jobName.addEventListener("input", () => { nameTouched = true; });
 pick.addEventListener("change", show);
 ["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, () => drop.classList.remove("over")));

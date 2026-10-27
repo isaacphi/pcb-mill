@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 
 MOVE_RE = re.compile(r"^\s*G0?[01](\s|$)")
@@ -33,8 +33,10 @@ SAMPLES_PER_POINT = 2     # probe touches per mesh point (median; retried if the
 SECONDS_PER_POINT = 2.8   # measured ~1.45 s/point at 1 sample; ~2.6 s at 2
 
 # Machine travel (stepper_x/y position_max in klipper/printer.cfg) minus a
-# 0.5 mm guard. The origin is the pocket corner, ~(25.4, 27.5).
-MACHINE_MAX = (126.0, 128.0)
+# guard. Y position_max is 128.5; a 100 mm board plus the 0.8 mm edge tool
+# legitimately needs ~128.34, so the old 0.5 mm guard blocked boards that
+# physically fit. Keep 0.1 mm at the Y end; X has plenty of margin.
+MACHINE_MAX = (126.0, 128.4)
 MACHINE_MIN = (-3.0, -3.0)
 
 Extents = tuple[float, float, float, float]
@@ -89,9 +91,6 @@ class MeshPlan:
     problem: str | None
     job: Extents = (0.0, 0.0, 0.0, 0.0)   # the same region in JOB coordinates
 
-    def as_dict(self) -> dict:
-        return asdict(self)
-
     def gcode(self) -> str:
         return (f"PCB_MESH X0={self.x0:.3f} Y0={self.y0:.3f} X1={self.x1:.3f} "
                 f"Y1={self.y1:.3f} PTSX={self.nx} PTSY={self.ny} SAMPLES={SAMPLES_PER_POINT}")
@@ -145,18 +144,20 @@ def mesh_plan(
 # ---------------------------------------------------------------------------
 # G-code header: refuse to cut without a datum + mesh that cover this job
 # ---------------------------------------------------------------------------
-def ready_header(region: Extents, deep: bool = False) -> str:
+def ready_header(region: Extents, deep: bool = False, mesh: bool = True) -> str:
     """Lines prepended to a job file. `region` is the mesh region in job
     coordinates. PCB_READY aborts the print unless the live Klipper session has
-    a datum and a mesh covering it at the current board origin. Drill/edge files
-    also get PCB_DEEP (room below the copper; no motion)."""
+    a datum and (unless mesh=False) a mesh covering it at the current board
+    origin. Drill/edge files also get PCB_DEEP (room below the copper; no motion)."""
+    suffix = "" if mesh else " MESH=0"
     head = (f"PCB_READY X0={region[0]:.3f} Y0={region[1]:.3f} "
-            f"X1={region[2]:.3f} Y1={region[3]:.3f}\n")
+            f"X1={region[2]:.3f} Y1={region[3]:.3f}{suffix}\n")
     return head + ("PCB_DEEP\n" if deep else "")
 
 
-def with_header(gcode: str, region: Extents, deep: bool = False) -> str:
-    return ready_header(region, deep) + gcode
+def with_header(gcode: str, region: Extents, deep: bool = False,
+                mesh: bool = True) -> str:
+    return ready_header(region, deep, mesh=mesh) + gcode
 
 
 PLUNGE_RE = re.compile(r"^(G0?1 Z)(-\d+(?:\.\d+)?)(.*)$")

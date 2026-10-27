@@ -1,0 +1,51 @@
+--- a/gerber_to_gcode.py
++++ b/gerber_to_gcode.py
+@@ -266,14 +266,18 @@
+             return gerber_bounds
+ 
+         gb_min_x, gb_min_y, gb_max_x, gb_max_y = gerber_bounds
+-        scale_factor = 25.4 / self.dpi
++        # Pygerber uses int(dpi / 25.4) pixels/mm, so 25.4/dpi is not exact.
++        # Derive the actual pixel pitch from the rendered bitmap dimensions.
++        W, H = bitmap.shape[1], bitmap.shape[0]
++        scale_x = (gb_max_x - gb_min_x) / (W - 1) if W > 1 else (25.4 / self.dpi)
++        scale_y = (gb_max_y - gb_min_y) / (H - 1) if H > 1 else (25.4 / self.dpi)
+ 
+         # Bitmap pixel coords to mm, then offset by Gerber origin
+-        min_x = cols.min() * scale_factor + gb_min_x
+-        max_x = cols.max() * scale_factor + gb_min_x
++        min_x = cols.min() * scale_x + gb_min_x
++        max_x = cols.max() * scale_x + gb_min_x
+         # Y-axis is flipped: bitmap row 0 = top = max Y in Gerber
+-        min_y = gb_max_y - rows.max() * scale_factor
+-        max_y = gb_max_y - rows.min() * scale_factor
++        min_y = gb_max_y - rows.max() * scale_y
++        max_y = gb_max_y - rows.min() * scale_y
+ 
+         return (min_x, min_y, max_x, max_y)
+ 
+@@ -864,7 +868,12 @@
+         # bounds), fill the interior (solid region -> single outer contour
+         # instead of a band with inner+outer), dilate by tool_radius (grow
+         # outward), then trace the one remaining contour and un-pad.
+-        scale_factor = 25.4 / self.dpi
++        # Actual pixel pitch from the rendered bitmap (pygerber rounds px/mm down).
++        W, H = bitmap.shape[1], bitmap.shape[0]
++        gb_min_x, gb_min_y, gb_max_x, gb_max_y = gerber_bounds
++        scale_x = (gb_max_x - gb_min_x) / (W - 1) if W > 1 else (25.4 / self.dpi)
++        scale_y = (gb_max_y - gb_min_y) / (H - 1) if H > 1 else (25.4 / self.dpi)
++        scale_factor = (scale_x + scale_y) / 2.0
+         tool_radius_mm = self.edge_cuts_tool.tool_diameter / 2.0
+         tool_radius_px = tool_radius_mm / scale_factor
+         disk_r = max(1, round(tool_radius_px))
+@@ -887,8 +896,8 @@
+         smoothed = self.smooth_path(largest_contour, tolerance=1.0)
+         gb_min_x, gb_min_y, gb_max_x, gb_max_y = gerber_bounds
+ 
+-        outline = [(point[1] * scale_factor + gb_min_x,
+-                    gb_max_y - point[0] * scale_factor)
++        outline = [(point[1] * scale_x + gb_min_x,
++                    gb_max_y - point[0] * scale_y)
+                    for point in smoothed]
+ 
+         return outline
