@@ -346,6 +346,26 @@ async def stop_job(request: Request, name: str):
     return _respond(request, name)
 
 
+COMBINED_NAME = "combined.gcode"
+
+
+def _combined_text(files: list[Path]) -> str:
+    """Join the three run files, dropping intermediate M5/park/M2 footers."""
+    parts = []
+    for i, f in enumerate(files):
+        lines = f.read_text().splitlines()
+        if i < len(files) - 1:
+            cut = max((n for n, line in enumerate(lines) if line.strip() == "M5"), default=-1)
+            if cut >= 0:
+                lines = lines[:cut]
+        parts.append("\n".join(lines).rstrip())
+    body = "\n\n".join(parts)
+    load = f"G0 X0 Y{BOARD_LOAD_Y:g} F3000"
+    if not body.rstrip().endswith(load):
+        body = body.rstrip() + "\n" + load
+    return body + "\n"
+
+
 @app.get("/jobs/{name}/combined.gcode")
 async def combined_export(name: str):
     """Download isolation + drill + edge as one runnable file for any converted job.
@@ -373,19 +393,7 @@ async def combined_export(name: str):
         files = [job / "out" / n for n in names]
         if not all(f.exists() for f in files):
             raise HTTPException(409, "no generated operations found")
-    parts = []
-    for i, f in enumerate(files):
-        lines = f.read_text().splitlines()
-        if i < len(files) - 1:
-            cut = max((i for i, line in enumerate(lines) if line.strip() == "M5"), default=-1)
-            if cut >= 0:
-                lines = lines[:cut]
-        parts.append("\n".join(lines).rstrip())
-    body = "\n\n".join(parts)
-    load = f"G0 X0 Y{BOARD_LOAD_Y:g} F3000"
-    if not body.rstrip().endswith(load):
-        body = body.rstrip() + "\n" + load
-    body += "\n"
+    body = _combined_text(files)
     fn = (st.get("slug") or detect.slug(name)) + "-combined.gcode"
     return Response(body, media_type="text/plain",
                     headers={"Content-Disposition": f'attachment; filename="{fn}"'})
@@ -611,7 +619,11 @@ async def send_to_machine(request: Request, name: str, extra_depth: float = Form
     sent = _prepare_run_files(job, plan, use_mesh, extra_depth)
     for run_name in sent:
         moonraker.upload(out / run_name, subdir=folder)
-    _set_status(job, sent=sent, sent_folder=folder, extra_depth=extra_depth)
+    combined_path = out / COMBINED_NAME
+    combined_path.write_text(_combined_text([out / name for name in sent]))
+    moonraker.upload(combined_path, subdir=folder)
+    _set_status(job, sent=sent, sent_folder=folder, combined=COMBINED_NAME,
+                extra_depth=extra_depth)
     # straight on to Fluidd's job list: that is where the cut is started
     target = f"{moonraker.fluidd()}/#/jobs"
     if request.headers.get("HX-Request"):

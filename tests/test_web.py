@@ -515,9 +515,12 @@ def test_send_requires_mesh_covering_job(tmp_path, monkeypatch):
     iso = (d / "1_isolation.gcode").read_text()
     assert iso.startswith(f"PCB_READY X0={plan.job[0]:.3f}") and "PCB_DEEP" not in iso
     assert iso.rstrip().endswith("G0 X0 Y100 F3000")
-    assert sorted(f.suffix for f in d.iterdir() if f.is_file()) == [".gcode"] * 3     # Klipper only prints .gcode/.g/.gco   # Klipper only prints .gcode/.g/.gco
+    assert sorted(f.suffix for f in d.iterdir() if f.is_file()) == [".gcode"] * 4
     assert (d / "2_drill.gcode").read_text().splitlines()[1] == "PCB_DEEP"
     assert (d / "3_edge.gcode").read_text().splitlines()[1] == "PCB_DEEP"
+    combined = (d / "combined.gcode").read_text()
+    assert combined.count("PCB_READY") == 3 and combined.count("M2") == 1
+    assert combined.rstrip().endswith("G0 X0 Y100 F3000")
 
 
 def test_mesh_can_be_skipped_and_still_sent(tmp_path, monkeypatch):

@@ -124,6 +124,7 @@ Jogging down stops on contact. Keep the machine e-stop within reach.</p>
   {% if st.sent %}
 <p class="ok">Open the <a href="{{ fluidd }}/#/jobs" target="_blank">Fluidd Jobs folder</a> for {{ st.sent_folder }}. Run in order:</p>
 <ol>{% for f in st.sent %}<li><code>{{ f }}</code></li>{% endfor %}</ol>
+{% if st.combined %}<p>Or run <code>{{ st.combined }}</code> once to do all three operations.</p>{% endif %}
 <p class="dim">Don't home or move the board between files.</p>
   {% endif %}
 
