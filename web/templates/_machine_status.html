@@ -1,0 +1,24 @@
+{# Klipper / machine connection. Rendered inline on the job page when Klipper can't be read,
+   and polled onto the home page. `link` is None on a host with no Moonraker (dev Mac). #}
+{% if link %}
+  {% if link.state == "ready" %}
+<p class="dim"><span class="ok">●</span> Machine connected, Klipper ready.</p>
+  {% else %}
+<div class="{{ 'warn' if link.state == 'startup' else 'err-box' }}" role="status">
+    {% if link.state == "startup" %}
+  <p><b>Klipper is connecting to the machine…</b> If this takes more than a minute, check the connection below.</p>
+    {% elif link.state == "unreachable" %}
+  <p><b>Can't reach Klipper.</b> The Pi's Moonraker service isn't answering.</p>
+    {% else %}
+  <p><b>Klipper is not ready ({{ link.state }}).</b>{% if link.message %} {{ link.message }}{% endif %}</p>
+    {% endif %}
+    {% if link.adapter is false %}
+  <p><b>The Pi can't see the machine's USB adapter.</b> It is unplugged or has no power.
+    Check the USB cable between the Pi and the machine, and that the machine is switched on.
+    Klipper reconnects by itself once the adapter is back.</p>
+    {% else %}
+  <p>Check the USB cable between the Pi and the machine, and that the machine is switched on.</p>
+    {% endif %}
+</div>
+  {% endif %}
+{% endif %}

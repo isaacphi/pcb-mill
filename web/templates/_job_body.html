@@ -19,8 +19,7 @@
   <li class="{{ 'done' if located else 'current' }}">Set up board</li>
   <li class="{{ 'done' if steps and steps.datum else ('current' if located and steps and steps.homed else 'todo') }}">Find copper</li>
   <li class="{{ 'done' if (steps and steps.mesh) or st.mesh_skipped else ('current' if steps and steps.datum else 'todo') }}">Mesh{% if st.mesh_skipped and not (steps and steps.mesh) %} (skipped){% endif %}</li>
-  <li class="{{ 'done' if st.sent else ('current' if (steps and steps.mesh) or st.mesh_skipped else 'todo') }}">Send</li>
-  <li class="{{ 'current' if st.sent else 'todo' }}">Cut</li>
+  <li class="{{ 'done' if (st.ran and st.ran|length >= 3) else ('current' if (steps and steps.mesh) or st.mesh_skipped else 'todo') }}">Cut</li>
 </ol>
 {% endif %}
 
@@ -52,16 +51,20 @@
   Homing, the copper datum and the mesh were cleared.</p>
 {% endif %}
 {% if not ms %}
-<p class="err">Klipper not reachable or in an error state (for example it lost its connection to the machine).</p>
+{% include "_machine_status.html" %}
+  {% if link and link.state in ("shutdown", "error") and link.adapter is not false %}
 {{ act("klipper-restart", "Restart Klipper", "secondary", "Restart Klipper? This clears homing, the copper datum and the mesh, so you will redo them before cutting.") }}
+  {% endif %}
 {% else %}
 <p class="dim">{{ st.board.w }} × {{ st.board.h }} mm; origin {% if ms.origin %}X{{ "%.1f"|format(ms.origin[0]) }} Y{{ "%.1f"|format(ms.origin[1]) }}{% else %}<b>not set</b>{% endif %}; bit X{{ "%.1f"|format(ms.position[0]) }} Y{{ "%.1f"|format(ms.position[1]) }}; homed {{ ms.homed or "no" }}</p>
 
-{% if printing and st.sent %}
+{% if printing %}
+<div class="processing"><div class="spinner"></div>
+  <div><b>Cutting</b> <code>{{ (ms.print.get("filename") or "").split("/")[-1] }}</code>
+    {% if ms.print.get("progress") %}<b>{{ (ms.print.progress * 100)|round|int }}%</b>{% endif %}</div></div>
 {{ act("stop", "Stop", "danger", "Stop the current job? It stops after the current move.") }}
-{% endif %}
-
-{% if phase and phase.state == "running" %}
+<p class="dim">Don't home or move the board between files.</p>
+{% elif phase and phase.state == "running" %}
 <div class="processing"><div class="spinner"></div>
   <div><b>{{ phase.name }}</b> <code>{{ phase.script }}</code></div></div>
 {{ act("abort", "Abort (emergency stop)", "danger", "Emergency stop now? Probing cannot be paused: this stops the machine and puts Klipper into shutdown. You will need to restart Klipper, then home and redo the copper and mesh.") }}
@@ -121,24 +124,27 @@ Jogging down stops on contact. Keep the machine e-stop within reach.</p>
       {% endfor %}
 </table>
     {% endif %}
-<form id="send-form" hx-preserve="true" hx-post="/jobs/{{ name }}/send" hx-target="#job-body" hx-swap="innerHTML">
-  <p class="warn"><b>Before sending:</b> make sure spindle power is ON and the probe clips are OFF.</p>
-  <label><input type="checkbox" name="spindle_on" required> Spindle power is ON</label>
-  <label><input type="checkbox" name="clips_off" required> Probe clips are OFF</label>
+<div id="run-fields" hx-preserve="true">
+  <p class="warn"><b>Before running:</b> make sure spindle power is ON and the probe clips are OFF. Don't home or move the board between files.</p>
+  <label><input type="checkbox" name="spindle_on"> Spindle power is ON</label>
+  <label><input type="checkbox" name="clips_off"> Probe clips are OFF</label>
   <label>Extra isolation depth <input type="number" name="extra_depth" value="{{ st.extra_depth or 0 }}" min="0" max="0.3" step="0.01" class="short-input"> mm</label>
-  <button>{{ "Send again" if st.sent else "Send to Fluidd" }}</button>
-</form>
+</div>
+<div class="runrow">
+  {% for b in run_buttons %}
+  <button type="button" {% if b.ran %}class="secondary"{% endif %} hx-post="/jobs/{{ name }}/run" hx-include="#run-fields"
+          hx-vals='{"file": "{{ b.file }}"{% if b.confirm %}, "out_of_order": "1"{% endif %}}'
+          {% if b.confirm %}hx-confirm="{{ b.confirm }}"{% endif %}
+          hx-target="#job-body" hx-swap="innerHTML" hx-disabled-elt="this">{% if b.ran %}✓ {% endif %}Run {{ b.n }} · {{ b.label }}</button>
+  {% endfor %}
+  <button type="button" class="secondary" hx-post="/jobs/{{ name }}/run" hx-include="#run-fields"
+          hx-vals='{"file": "combined.gcode"}' hx-target="#job-body" hx-swap="innerHTML" hx-disabled-elt="this">Run all three</button>
+</div>
   {% endif %}
 {% endif %}
   {% endif %}
   {% endif %}
 
-  {% if st.sent %}
-<p class="ok">Open the <a href="{{ fluidd }}/#/jobs" target="_blank">Fluidd Jobs folder</a> for {{ st.sent_folder }}. Run in order:</p>
-<ol>{% for f in st.sent %}<li><code>{{ f }}</code></li>{% endfor %}</ol>
-{% if st.combined %}<p>Or run <code>{{ st.combined }}</code> once to do all three operations.</p>{% endif %}
-<p class="dim">Don't home or move the board between files.</p>
-  {% endif %}
 
 <p><a href="/jobs/{{ name }}/combined.gcode" download>Download combined .gcode</a></p>
 

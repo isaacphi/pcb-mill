@@ -118,6 +118,58 @@ def firmware_restart() -> None:
     _post("/printer/firmware_restart")
 
 
+def start_print(filename: str) -> None:
+    """Start a file already in Moonraker's gcodes folder (path relative to it, e.g. 'job/1_isolation.gcode')."""
+    base = _api()
+    if not base:
+        raise RuntimeError("Moonraker control not available")
+    r = httpx.post(f"{base}/printer/print/start", params={"filename": filename}, timeout=15)
+    if r.status_code >= 400:
+        raise KlipperError(_error_message(r))
+
+
+def remove_folder(subdir: str) -> None:
+    """Delete a job's folder from the gcodes directory (only possible when it is local)."""
+    gd = gcode_dir()
+    if gd is None or not subdir or "/" in subdir or subdir.startswith("."):
+        return
+    target = gd / subdir
+    if target.is_dir() and gd.resolve() in target.resolve().parents:
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def serial_present() -> bool | None:
+    """Is the machine's USB serial device (printer.cfg [mcu] serial) there? None if unknown."""
+    cfg = Path(os.environ.get("PRINTER_CFG", "~/printer_data/config/printer.cfg")).expanduser()
+    try:
+        text = cfg.read_text()
+    except OSError:
+        return None
+    sect = None
+    for line in text.splitlines():
+        line = line.split("#")[0].strip()
+        if line.startswith("["):
+            sect = line.strip("[]").strip()
+        elif sect == "mcu" and line.lower().startswith("serial"):
+            return Path(line.split(":", 1)[-1].split("=", 1)[-1].strip()).exists()
+    return None
+
+
+def link_status() -> dict | None:
+    """Is Klipper up and talking to the machine? None where there is no Moonraker control (dev Mac).
+
+    -> {"state": ready|startup|shutdown|error|unreachable, "message": str, "adapter": bool|None}
+    """
+    if not control_available():
+        return None
+    i = info()
+    adapter = serial_present()
+    if i is None:
+        return {"state": "unreachable", "message": "", "adapter": adapter}
+    msg = (i.get("state_message") or "").strip().splitlines()
+    return {"state": i.get("state", "unreachable"), "message": msg[0] if msg else "", "adapter": adapter}
+
+
 def query(objects: str) -> dict:
     base = _api()
     if not base:
@@ -156,7 +208,7 @@ def upload(path: Path, subdir: str = "") -> dict:
 
 def machine_state() -> dict:
     """Live Klipper session facts the workflow depends on (read-only)."""
-    s = query("toolhead&bed_mesh&gcode_macro%20PCB_DATUM&save_variables&webhooks&print_stats")
+    s = query("toolhead&bed_mesh&gcode_macro%20PCB_DATUM&save_variables&webhooks&print_stats&virtual_sdcard")
     v = s["save_variables"]["variables"]
     mesh = s["bed_mesh"]
     origin = None
@@ -168,6 +220,8 @@ def machine_state() -> dict:
         "klipper": s["webhooks"]["state"],
         "print": {
             "state": s["print_stats"]["state"],
+            "filename": s["print_stats"].get("filename") or "",
+            "progress": (s.get("virtual_sdcard") or {}).get("progress") or 0.0,
         },
         "homed": s["toolhead"]["homed_axes"],
         "position": s["toolhead"]["position"][:3],

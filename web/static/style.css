@@ -253,3 +253,13 @@ table.jobs form { margin: 0; }
 #send-form { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1.2rem; }
 #send-form .warn { flex-basis: 100%; margin: 0; }
 #send-form label { margin: 0; }
+
+.err-box {
+  margin: .8rem 0;
+  padding: .55rem .8rem;
+  color: var(--danger);
+  background: hsl(355 80% 96%);
+  border-left: 4px solid var(--danger);
+}
+.err-box p, .warn p { margin: .3rem 0; }
+.runrow { display: flex; flex-wrap: wrap; gap: .6rem; margin: .8rem 0; }

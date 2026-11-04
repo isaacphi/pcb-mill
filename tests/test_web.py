@@ -383,10 +383,14 @@ def test_with_header_puts_ready_check_before_spindle():
 
 # ------------------------------------------------ workflow routes (Klipper faked)
 
+STARTED: list[str] = []      # files the fake Klipper was asked to print
+OK = {"spindle_on": "on", "clips_off": "on"}
+
+
 def _fake_machine(monkeypatch, tmp_path, **over):
     ms = {"klipper": "ready", "homed": "xyz", "position": [26.0, 30.0, 25.0],
           "origin": (25.4, 27.5), "datum_done": False,
-          "print": {"state": "standby"},
+          "print": {"state": "standby", "filename": "", "progress": 0.0},
           "mesh": {"profile": "", "min": None, "max": None, "matrix": [], "lo": None, "hi": None}}
     ms.update(over)
     sent = []
@@ -395,6 +399,8 @@ def _fake_machine(monkeypatch, tmp_path, **over):
     monkeypatch.delenv("MOONRAKER_URL", raising=False)
     monkeypatch.setattr(moonraker, "machine_state", lambda: ms)
     monkeypatch.setattr(moonraker, "gcode", lambda s, timeout=15: sent.append(s) or {"result": "ok"})
+    STARTED.clear()
+    monkeypatch.setattr(moonraker, "start_print", lambda f: STARTED.append(f))
     webapp._RUNNING.clear()
     return ms, sent
 
@@ -497,26 +503,21 @@ def test_mesh_route_refuses_when_it_does_not_fit(tmp_path, monkeypatch):
     assert r.status_code == 409 and "travel" in r.text and not sent
 
 
-def test_send_requires_mesh_covering_job(tmp_path, monkeypatch):
+def test_run_requires_mesh_covering_job(tmp_path, monkeypatch):
     ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
     job = _job("wf-5")
-    r = TestClient(webapp.app).post(f"/jobs/{job.name}/send", data={"spindle_on": "on", "clips_off": "on"})
-    assert r.status_code == 409          # no mesh yet
+    c = TestClient(webapp.app)
+    r = c.post(f"/jobs/{job.name}/run", data={"file": "1_isolation.gcode", **OK})
+    assert r.status_code == 409 and not STARTED          # no mesh yet
     plan = probe.mesh_plan((0.8, 0.8, 90.0, 88.0), (25.4, 27.5))
     ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
                       matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
-    r = TestClient(webapp.app).post(f"/jobs/{job.name}/send")
-    assert r.status_code == 409 and "spindle" in r.text
-    r = TestClient(webapp.app).post(f"/jobs/{job.name}/send",
-                                    data={"spindle_on": "on", "clips_off": "on"},
-                                    follow_redirects=False)
-    assert r.status_code == 303
-    assert r.headers["location"].endswith(":8080/#/jobs")        # straight on to Fluidd
+    r = c.post(f"/jobs/{job.name}/run", data={"file": "1_isolation.gcode"})
+    assert r.status_code == 409 and "spindle" in r.text and not STARTED
+    r = c.post(f"/jobs/{job.name}/run", data={"file": "1_isolation.gcode", **OK}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/jobs/{job.name}"
+    assert STARTED == ["wf-5/1_isolation.gcode"]         # started straight from our page
     d = tmp_path / "gcodes" / "wf-5"
-    iso = (d / "1_isolation.gcode").read_text()
-    assert iso.startswith(f"PCB_READY X0={plan.job[0]:.3f}") and "PCB_DEEP" not in iso
-    assert iso.rstrip().endswith("G0 X0 Y100 F3000")
-    assert sorted(f.suffix for f in d.iterdir() if f.is_file()) == [".gcode"] * 4
     assert (d / "2_drill.gcode").read_text().splitlines()[1] == "PCB_DEEP"
     assert (d / "3_edge.gcode").read_text().splitlines()[1] == "PCB_DEEP"
     combined = (d / "combined.gcode").read_text()
@@ -533,10 +534,9 @@ def test_mesh_can_be_skipped_and_still_sent(tmp_path, monkeypatch):
     r = c.post(f"/jobs/{job.name}/skip-mesh", headers={"HX-Request": "true"})
     assert r.status_code == 200
     assert json.loads((job / "status.json").read_text())["mesh_skipped"] is True
-    assert "Mesh skipped" in r.text and "Send to Fluidd" in r.text
-    r = c.post(f"/jobs/{job.name}/send", data={"spindle_on": "on", "clips_off": "on"},
-               follow_redirects=False)
-    assert r.status_code == 303
+    assert "Mesh skipped" in r.text and "Run all three" in r.text
+    r = c.post(f"/jobs/{job.name}/run", data={"file": "combined.gcode", **OK}, follow_redirects=False)
+    assert r.status_code == 303 and STARTED == ["skip-send/combined.gcode"]
     d = tmp_path / "gcodes" / "skip-send"
     assert (d / "1_isolation.gcode").read_text().splitlines()[0].endswith("MESH=0")
     assert (d / "2_drill.gcode").read_text().splitlines()[1] == "PCB_DEEP"
@@ -551,7 +551,7 @@ def test_klipper_rounded_mesh_bounds_still_count_as_covering(tmp_path, monkeypat
     ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1 - 0.018, plan.y1],
                       matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
     r = TestClient(webapp.app).get(f"/jobs/{job.name}")
-    assert "Send to Fluidd" in r.text
+    assert "Run all three" in r.text
 
 
 def test_send_refuses_mesh_that_is_too_small(tmp_path, monkeypatch):
@@ -559,7 +559,7 @@ def test_send_refuses_mesh_that_is_too_small(tmp_path, monkeypatch):
     job = _job("wf-6")
     ms["mesh"].update(profile="default", min=[28.0, 32.0], max=[46.0, 50.0],
                       matrix=[[0.0]], lo=0.0, hi=0.0)       # the 18 mm test patch
-    assert TestClient(webapp.app).post(f"/jobs/{job.name}/send").status_code == 409
+    assert TestClient(webapp.app).post(f"/jobs/{job.name}/run", data={"file": "1_isolation.gcode", **OK}).status_code == 409
 
 
 def test_oversize_job_is_rejected_page(tmp_path, monkeypatch):
@@ -594,9 +594,9 @@ def test_send_applies_extra_depth_to_isolation_only(tmp_path, monkeypatch):
     ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
                       matrix=[[0.0]], lo=0.0, hi=0.0)
     c = TestClient(webapp.app)
-    assert c.post(f"/jobs/{job.name}/send", data={"extra_depth": "0.5"}).status_code == 400
-    r = c.post(f"/jobs/{job.name}/send",
-               data={"extra_depth": "0.05", "spindle_on": "on", "clips_off": "on"},
+    assert c.post(f"/jobs/{job.name}/run", data={"file": "1_isolation.gcode", "extra_depth": "0.5", **OK}).status_code == 400
+    r = c.post(f"/jobs/{job.name}/run",
+               data={"file": "1_isolation.gcode", "extra_depth": "0.05", **OK},
                follow_redirects=False)
     assert r.status_code == 303
     d = tmp_path / "gcodes" / "wf-10"
@@ -621,7 +621,7 @@ def test_send_adds_rapid_feeds(tmp_path, monkeypatch):
     ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
                       matrix=[[0.0]], lo=0.0, hi=0.0)
     assert TestClient(webapp.app).post(
-        f"/jobs/{job.name}/send", data={"spindle_on": "on", "clips_off": "on"},
+        f"/jobs/{job.name}/run", data={"file": "2_drill.gcode", "out_of_order": "1", **OK},
         follow_redirects=False).status_code == 303
     text = (tmp_path / "gcodes" / "wf-11" / "2_drill.gcode").read_text()
     assert "G0 X2 Y2 F4000" in text and "G0 Z1.0 F1000" in text
@@ -637,16 +637,15 @@ def test_htmx_actions_return_the_fragment_not_a_redirect(tmp_path, monkeypatch):
         time.sleep(0.5)
 
 
-def test_send_via_htmx_redirects_the_browser_to_fluidd(tmp_path, monkeypatch):
+def test_run_via_htmx_returns_the_refreshed_page_body(tmp_path, monkeypatch):
     ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
     job = _job("wf-13")
     plan = probe.mesh_plan((0.8, 0.8, 90.0, 88.0), (25.4, 27.5))
     ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
                       matrix=[[0.0]], lo=0.0, hi=0.0)
     r = TestClient(webapp.app).post(
-        f"/jobs/{job.name}/send", data={"spindle_on": "on", "clips_off": "on"},
-        headers={"HX-Request": "true"})
-    assert r.status_code == 200 and r.headers["HX-Redirect"].endswith("/#/jobs")
+        f"/jobs/{job.name}/run", data={"file": "1_isolation.gcode", **OK}, headers={"HX-Request": "true"})
+    assert r.status_code == 200 and "HX-Redirect" not in r.headers and STARTED == ["wf-13/1_isolation.gcode"]
 
 
 # ------------------------------------------------------------ upload detection
@@ -850,7 +849,7 @@ def test_page_goes_straight_to_send_when_machine_is_already_located_and_meshed(t
     ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
                       matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
     page = TestClient(webapp.app).get(f"/jobs/{job.name}").text
-    assert "Send to Fluidd" in page
+    assert "Run all three" in page
     assert "Home &amp; move bed forward" not in page and "Board attached" not in page
     assert 'class="done">Set up board' in page
 
@@ -860,7 +859,7 @@ def test_page_still_walks_the_steps_when_machine_is_not_located(tmp_path, monkey
     _fake_machine(monkeypatch, tmp_path, datum_done=False)
     job = _job("wf-notlive", setup_done=False, board_ready=False)
     page = TestClient(webapp.app).get(f"/jobs/{job.name}").text
-    assert "Home &amp; move bed forward" in page and "Send to Fluidd" not in page
+    assert "Home &amp; move bed forward" in page and "Run all three" not in page
 
 
 # ------------------------------------------------------------ mesh recovery
@@ -913,6 +912,8 @@ def test_klipper_restart_offered_when_klipper_is_down(tmp_path, monkeypatch):
     def boom():
         raise RuntimeError("down")
     monkeypatch.setattr(moonraker, "machine_state", boom)
+    monkeypatch.setattr(moonraker, "link_status", lambda: {
+        "state": "shutdown", "message": "Lost communication with MCU 'mcu'", "adapter": True})
     calls = []
     monkeypatch.setattr(moonraker, "firmware_restart", lambda: calls.append("fr"))
     c = TestClient(webapp.app)
@@ -930,13 +931,13 @@ def test_mesh_can_be_redone_or_swapped_for_skip_afterwards(tmp_path, monkeypatch
     ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
                       matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
     page = TestClient(webapp.app).get("/jobs/wf-mesh").text
-    assert "Send to Fluidd" in page and ">Redo mesh</button>" in page
+    assert "Run all three" in page and ">Redo mesh</button>" in page
 
-    # skipped (no mesh on the machine): Send is available and the mesh can still be probed
+    # skipped (no mesh on the machine): Run is available and the mesh can still be probed
     ms["mesh"].update(profile="", min=None, max=None, matrix=[], lo=None, hi=None)
     webapp._set_status(job, mesh_skipped=True)
     page = TestClient(webapp.app).get("/jobs/wf-mesh").text
-    assert "Mesh skipped" in page and ">Probe mesh instead</button>" in page and "Send to Fluidd" in page
+    assert "Mesh skipped" in page and ">Probe mesh instead</button>" in page and "Run all three" in page
 
 
 def test_static_assets_are_versioned_so_deploys_beat_the_browser_cache():
@@ -1038,3 +1039,153 @@ def test_watchdog_only_runs_where_moonraker_is_configured(monkeypatch):
     assert watchdog.enabled()
     monkeypatch.setenv("PCB_MILL_WATCHDOG", "0")
     assert not watchdog.enabled()
+
+
+# ------------------------------------------------------------ run from the page
+def _ready(monkeypatch, tmp_path, name, **st):
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job(name, **st)
+    plan = probe.mesh_plan((0.8, 0.8, 90.0, 88.0), (25.4, 27.5))
+    ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
+                      matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
+    return ms, job
+
+
+def test_run_page_has_a_button_per_file_plus_run_all(tmp_path, monkeypatch):
+    _ready(monkeypatch, tmp_path, "run-ui")
+    page = TestClient(webapp.app).get("/jobs/run-ui").text
+    for label in ("Run 1 · Isolation", "Run 2 · Drill", "Run 3 · Edge cut", "Run all three"):
+        assert label in page
+    assert "Send" not in page and "Fluidd" not in page          # no detour through Fluidd
+    # later files ask before running ahead of the earlier ones
+    assert "Isolation has not run yet. Run drill anyway?" in page
+    assert "Isolation and Drill have not run yet. Run edge cut anyway?" in page
+
+
+def test_run_each_file_and_the_combined_one(tmp_path, monkeypatch):
+    _ready(monkeypatch, tmp_path, "run-each")
+    c = TestClient(webapp.app)
+    for f in ("1_isolation.gcode", "2_drill.gcode", "3_edge.gcode", "combined.gcode"):
+        r = c.post("/jobs/run-each/run", data={"file": f, "out_of_order": "1", **OK}, follow_redirects=False)
+        assert r.status_code == 303
+    assert STARTED == [f"run-each/{f}" for f in
+                       ("1_isolation.gcode", "2_drill.gcode", "3_edge.gcode", "combined.gcode")]
+    assert c.post("/jobs/run-each/run", data={"file": "../../etc/passwd", **OK}).status_code == 400
+
+
+def test_run_enforces_order_unless_confirmed(tmp_path, monkeypatch):
+    _ready(monkeypatch, tmp_path, "run-order")
+    c = TestClient(webapp.app)
+    r = c.post("/jobs/run-order/run", data={"file": "2_drill.gcode", **OK})
+    assert r.status_code == 409 and "Isolation has not run yet" in r.text and not STARTED
+    assert c.post("/jobs/run-order/run", data={"file": "2_drill.gcode", "out_of_order": "1", **OK},
+                  follow_redirects=False).status_code == 303
+    # once isolation has finished, drill needs no confirmation
+    _, job = _ready(monkeypatch, tmp_path, "run-order2", ran=["1_isolation.gcode"])
+    assert c.post("/jobs/run-order2/run", data={"file": "2_drill.gcode", **OK},
+                  follow_redirects=False).status_code == 303
+
+
+def test_run_refuses_when_klipper_is_not_ready_or_already_cutting(tmp_path, monkeypatch):
+    ms, _ = _ready(monkeypatch, tmp_path, "run-guard")
+    c = TestClient(webapp.app)
+    ms["klipper"] = "startup"
+    r = c.post("/jobs/run-guard/run", data={"file": "1_isolation.gcode", **OK})
+    assert r.status_code == 409 and "not ready" in r.text
+    ms["klipper"] = "ready"
+    ms["print"]["state"] = "printing"
+    r = c.post("/jobs/run-guard/run", data={"file": "1_isolation.gcode", **OK})
+    assert r.status_code == 409 and "already running" in r.text and not STARTED
+
+    def down():
+        raise RuntimeError("down")
+    ms["print"]["state"] = "standby"
+    monkeypatch.setattr(moonraker, "machine_state", down)
+    r = c.post("/jobs/run-guard/run", data={"file": "1_isolation.gcode", **OK})
+    assert r.status_code == 409 and "USB" in r.text and not STARTED
+
+
+def test_page_shows_progress_and_stop_while_cutting_and_remembers_finished_files(tmp_path, monkeypatch):
+    ms, job = _ready(monkeypatch, tmp_path, "run-prog", gcode_folder="run-prog")
+    ms["print"].update(state="printing", filename="run-prog/1_isolation.gcode", progress=0.42)
+    page = TestClient(webapp.app).get("/jobs/run-prog").text
+    assert "Cutting" in page and "1_isolation.gcode" in page and "42%" in page and ">Stop</button>" in page
+    assert ">Run 1" not in page                               # no second job on top of the first
+
+    ms["print"].update(state="complete", progress=1.0)
+    page = TestClient(webapp.app).get("/jobs/run-prog").text
+    assert json.loads((job / "status.json").read_text())["ran"] == ["1_isolation.gcode"]
+    assert "✓ Run 1 · Isolation" in page
+    ms["print"].update(filename="run-prog/combined.gcode")
+    TestClient(webapp.app).get("/jobs/run-prog")
+    assert len(json.loads((job / "status.json").read_text())["ran"]) == 3
+
+
+def test_conversion_puts_run_files_in_place_without_a_send_step(tmp_path, monkeypatch):
+    _fake_machine(monkeypatch, tmp_path)
+    job = _job("pub-1", extents=[0.8, 0.8, 90.0, 88.0])
+    names = webapp._publish(job, json.loads((job / "status.json").read_text()))
+    assert names == ["1_isolation.gcode", "2_drill.gcode", "3_edge.gcode"]
+    d = tmp_path / "gcodes" / "pub-1"
+    assert {p.name for p in d.iterdir()} == {*names, "combined.gcode"}
+    assert (d / "1_isolation.gcode").read_text().startswith("PCB_READY X0=5.000")
+    st = json.loads((job / "status.json").read_text())
+    assert st["gcode_folder"] == "pub-1" and st["run_files"] == names
+
+
+def test_published_folder_is_unique_per_job_not_per_title(tmp_path, monkeypatch):
+    _fake_machine(monkeypatch, tmp_path)
+    a = _job("20261103-100000-board", title="board", extents=[0.8, 0.8, 90.0, 88.0])
+    b = _job("20261103-110000-board", title="board", extents=[0.8, 0.8, 50.0, 40.0])
+    for j in (a, b):
+        webapp._publish(j, json.loads((j / "status.json").read_text()))
+    assert (tmp_path / "gcodes" / a.name / "1_isolation.gcode").exists()
+    assert (tmp_path / "gcodes" / b.name / "1_isolation.gcode").exists()
+    assert (tmp_path / "gcodes" / a.name / "1_isolation.gcode").read_text() != \
+        (tmp_path / "gcodes" / b.name / "1_isolation.gcode").read_text()
+
+
+def test_deleting_a_job_removes_its_published_files(tmp_path, monkeypatch):
+    _fake_machine(monkeypatch, tmp_path)
+    job = _job("del-pub", extents=[0.8, 0.8, 90.0, 88.0])
+    webapp._publish(job, json.loads((job / "status.json").read_text()))
+    d = tmp_path / "gcodes" / "del-pub"
+    assert d.is_dir()
+    assert TestClient(webapp.app).post("/jobs/del-pub/delete", follow_redirects=False).status_code == 303
+    assert not d.exists() and not job.exists()
+
+
+# ------------------------------------------------------------ connection prompt
+def test_machine_status_endpoint_and_job_page_explain_a_missing_usb_adapter(tmp_path, monkeypatch):
+    _fake_machine(monkeypatch, tmp_path)
+    _job("link-1")
+
+    def down():
+        raise RuntimeError("down")
+    monkeypatch.setattr(moonraker, "machine_state", down)
+    c = TestClient(webapp.app)
+    monkeypatch.setattr(moonraker, "link_status", lambda: {
+        "state": "startup", "message": "", "adapter": False})
+    for text in (c.get("/machine/status").text, c.get("/jobs/link-1").text):
+        assert "connecting to the machine" in text and "can't see the machine's USB adapter" in text
+        assert "Restart Klipper" not in text                      # pointless with no adapter
+    monkeypatch.setattr(moonraker, "link_status", lambda: {
+        "state": "shutdown", "message": "Lost communication with MCU 'mcu'", "adapter": True})
+    text = c.get("/jobs/link-1").text
+    assert "Lost communication" in text and "Check the USB cable" in text and "Restart Klipper" in text
+    monkeypatch.setattr(moonraker, "link_status", lambda: {"state": "ready", "message": "", "adapter": True})
+    assert "Klipper ready" in c.get("/machine/status").text
+    monkeypatch.setattr(moonraker, "link_status", lambda: None)        # dev machine: say nothing
+    assert c.get("/machine/status").text.strip() == ""
+
+
+def test_serial_presence_is_read_from_printer_cfg(tmp_path, monkeypatch):
+    dev = tmp_path / "ttyFAKE"
+    cfg = tmp_path / "printer.cfg"
+    cfg.write_text(f"[stepper_x]\nserial: /nope\n[mcu]\n# comment\nserial: {dev}\n")
+    monkeypatch.setenv("PRINTER_CFG", str(cfg))
+    assert moonraker.serial_present() is False
+    dev.write_text("")
+    assert moonraker.serial_present() is True
+    monkeypatch.setenv("PRINTER_CFG", str(tmp_path / "missing.cfg"))
+    assert moonraker.serial_present() is None

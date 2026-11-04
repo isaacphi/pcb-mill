@@ -9,6 +9,7 @@
 <body>
 <main>
 <h1>pcb-mill</h1>
+<div id="machine" hx-get="/machine/status" hx-trigger="load, every 5s" hx-swap="innerHTML"></div>
 
 <form id="up" method="post" action="/upload" enctype="multipart/form-data">
   {% include "_dropzone.html" %}
@@ -44,6 +45,7 @@
 </table>
 {% else %}<p class="dim">No jobs yet. Drop Gerbers and drill files above to create one.</p>{% endif %}
 
+<script src="{{ asset('htmx.min.js') }}"></script>
 <script src="{{ asset('upload.js') }}"></script>
 </main>
 </body>

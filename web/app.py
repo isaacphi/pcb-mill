@@ -147,6 +147,11 @@ async def _convert(job: Path, copper: str, side: str, edge: str, drill: str, con
     _set_status(job, state="rejected" if problem else "done", error=problem,
                 files=files, extents=cut, edge_extents=edge_ext, board=board,
                 toolpaths="out/toolpaths.png" if (out / "toolpaths.png").exists() else None)
+    if not problem:
+        try:
+            await asyncio.to_thread(_publish, job, _status(job))
+        except (OSError, RuntimeError, httpx.HTTPError) as e:
+            _set_status(job, publish_error=str(e)[:300])
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -331,6 +336,34 @@ def _mesh_covers(plan, ms: dict) -> bool:
             and m["max"][0] >= plan.x1 - tol and m["max"][1] >= plan.y1 - tol)
 
 
+def _note_completed(job: Path, st: dict, ms: dict) -> dict:
+    """Remember which run files Klipper has finished (print_stats stays 'complete' until the next job)."""
+    pr = ms.get("print", {})
+    folder = st.get("gcode_folder")
+    fn = pr.get("filename") or ""
+    if not (folder and pr.get("state") == "complete" and fn.startswith(folder + "/")):
+        return st
+    base = fn.split("/", 1)[1]
+    done = RUN_NAMES if base == COMBINED_NAME else ([base] if base in RUN_NAMES else [])
+    ran = list(dict.fromkeys([*(st.get("ran") or []), *done]))
+    if ran != (st.get("ran") or []):
+        _set_status(job, ran=ran)
+        st = {**st, "ran": ran}
+    return st
+
+
+def _run_buttons(st: dict) -> list[dict]:
+    """The Run buttons for the job page; a file whose predecessors have not run asks first."""
+    ran = st.get("ran") or []
+    out = []
+    for i, n in enumerate(RUN_NAMES):
+        missing = [RUN_LABELS[p] for p in RUN_NAMES[:i] if p not in ran]
+        out.append({"file": n, "label": RUN_LABELS[n], "n": i + 1, "ran": n in ran,
+                    "confirm": (f"{' and '.join(missing)} {'has' if len(missing) == 1 else 'have'} not run yet. Run {RUN_LABELS[n].lower()} anyway?"
+                                if missing else None)})
+    return out
+
+
 def _job_context(request: Request, name: str) -> dict:
     job = JOBS / name
     if not job.is_dir():
@@ -351,6 +384,9 @@ def _job_context(request: Request, name: str) -> dict:
                  "error": "interrupted before it finished (the app restarted or Klipper stopped)"}
         _set_status(job, phase=phase)
     ms = _live() if st.get("state") == "done" else None
+    link = moonraker.link_status() if (ms is None and st.get("state") == "done") else None
+    if ms:
+        st = _note_completed(job, st, ms)
     plan = _plan_for(st, ms)
     steps = None
     if ms is not None:
@@ -368,7 +404,8 @@ def _job_context(request: Request, name: str) -> dict:
     return {"request": request, "name": name, "st": st, "log": log, "elapsed": elapsed,
             "moonraker_control": moonraker.control_available(),
             "fluidd": moonraker.fluidd(), "ms": ms, "plan": plan, "steps": steps,
-            "auto_restart": watchdog.recent_event(),
+            "auto_restart": watchdog.recent_event(), "link": link,
+            "run_buttons": _run_buttons(st),
             "phase": phase, "printing": print_state in ("printing", "paused"),
             "datum_depth": DATUM_DEPTH_MM}
 
@@ -401,8 +438,10 @@ def _busy(job: Path, st: dict) -> str | None:
     if job.name in _RUNNING or (st.get("phase") or {}).get("state") == "running":
         return "a machine step is running for this job"
     ms = _live()
-    if ms and ms.get("print", {}).get("state") in ("printing", "paused") and st.get("sent"):
-        return "the machine is cutting; stop it first"
+    pr = (ms or {}).get("print", {})
+    folder = st.get("gcode_folder") or ""
+    if pr.get("state") in ("printing", "paused") and (not folder or (pr.get("filename") or "").startswith(folder + "/")):
+        return "the machine is cutting this job; stop it first"
     return None
 
 
@@ -449,7 +488,10 @@ async def delete_job(name: str):
         raise HTTPException(404)
     if why := _busy(job, _status(job)):
         raise HTTPException(409, why)
+    folder = _status(job).get("gcode_folder")
     shutil.rmtree(job)
+    if folder:
+        moonraker.remove_folder(folder)
     return RedirectResponse("/", status_code=303)
 
 
@@ -511,7 +553,7 @@ async def combined_export(name: str):
             raise HTTPException(409, "Klipper is not reachable / board origin not set; send the job first")
         use_mesh = bool(ms and _mesh_covers(plan, ms))
         mesh_header = use_mesh or not st.get("mesh_skipped")
-        _prepare_run_files(job, plan, mesh_header, float(st.get("extra_depth") or 0))
+        _prepare_run_files(job, plan.job, mesh_header, float(st.get("extra_depth") or 0))
         files = [job / "out" / n for n in names]
         if not all(f.exists() for f in files):
             raise HTTPException(409, "no generated operations found")
@@ -734,8 +776,8 @@ async def jog(request: Request, name: str, dz: float = Form(...)):
 RUN_FILES = (("isolation.nc", "isolation", False), ("drill.nc", "drill", True), ("edge.nc", "edge", True))
 
 
-def _prepare_run_files(job: Path, plan, use_mesh: bool, extra_depth: float = 0.0) -> list[str]:
-    """Build the three Fluidd run files; return their names."""
+def _prepare_run_files(job: Path, region, use_mesh: bool, extra_depth: float = 0.0) -> list[str]:
+    """Build the three run files (PCB_READY header + toolpath); return their names."""
     out = job / "out"
     inv = config_render.load_inventory()["machine"]
     sent = []
@@ -748,45 +790,94 @@ def _prepare_run_files(job: Path, plan, use_mesh: bool, extra_depth: float = 0.0
         if op == "isolation":
             body = probe.deepen(body, extra_depth)       # isolation only: drill/edge depths are fixed
         run = out / f"{len(sent) + 1}_{op}.gcode"        # Klipper only prints .gcode/.g/.gco
-        text = probe.with_header(body, plan.job, deep, mesh=use_mesh).rstrip()
+        text = probe.with_header(body, region, deep, mesh=use_mesh).rstrip()
         text += f"\nG0 X0 Y{BOARD_LOAD_Y:g} F3000\n"       # board loading position
         run.write_text(text)
         sent.append(run.name)
     return sent
 
 
-@app.post("/jobs/{name}/send")
-async def send_to_machine(request: Request, name: str, extra_depth: float = Form(0.0),
-                           spindle_on: bool = Form(False), clips_off: bool = Form(False)):
-    """Upload isolation, drill and edge jobs (each with a PCB_READY header) into
-    one Fluidd folder named after the board, once datum + mesh are live."""
+RUN_NAMES = tuple(f"{i}_{op}.gcode" for i, (_, op, _) in enumerate(RUN_FILES, 1))
+RUN_LABELS = {"1_isolation.gcode": "Isolation", "2_drill.gcode": "Drill", "3_edge.gcode": "Edge cut"}
+
+
+def _publish(job: Path, st: dict, use_mesh: bool = True, extra_depth: float = 0.0) -> list[str] | None:
+    """Write the run files and combined.gcode, and put them where Klipper can start them.
+
+    The PCB_READY header only needs the cut extents (the mesh region in job
+    coordinates), not where the board sits on the machine, so this runs as soon as a
+    job is converted; the page re-runs it at Run time to apply the current mesh
+    choice and extra depth. Files go in a folder named after the job directory, which
+    is unique (a title is not: two boards with one name must not share a folder).
+    """
+    out = job / "out"
+    if not (out / "isolation.nc").exists() or not st.get("extents"):
+        return None
+    try:
+        region = probe.mesh_plan(tuple(st["extents"]), (0.0, 0.0)).job
+    except ValueError:
+        return None
+    names = _prepare_run_files(job, region, use_mesh, extra_depth)
+    combined = out / COMBINED_NAME
+    combined.write_text(_combined_text([out / n for n in names]))
+    if moonraker.available():
+        for n in (*names, COMBINED_NAME):
+            moonraker.upload(out / n, subdir=job.name)
+    _set_status(job, gcode_folder=job.name if moonraker.available() else None,
+                run_files=names, extra_depth=extra_depth)
+    return names
+
+
+@app.post("/jobs/{name}/run")
+async def run_file(request: Request, name: str, file: str = Form(...), extra_depth: float = Form(0.0),
+                   spindle_on: bool = Form(False), clips_off: bool = Form(False),
+                   out_of_order: bool = Form(False)):
+    """Start one run file (or combined.gcode) on the machine, once Klipper is ready
+    and the datum + mesh cover this job. PCB_READY at the top of every file checks
+    the same thing again inside Klipper."""
+    if file not in (*RUN_NAMES, COMBINED_NAME):
+        raise HTTPException(400, "unknown run file")
     if not 0 <= extra_depth <= 0.3:
         raise HTTPException(400, "extra_depth must be 0..0.3 mm")
     if not (spindle_on and clips_off):
-        raise HTTPException(409, "confirm spindle power is ON and probe clips are OFF before sending")
+        raise HTTPException(409, "confirm spindle power is ON and probe clips are OFF before running")
     job, st = _job_ready(name)
     ms = _live()
+    if not ms:
+        raise HTTPException(409, "Klipper is not reachable - check the USB connection to the machine")
+    if ms["klipper"] != "ready":
+        raise HTTPException(409, f"Klipper is {ms['klipper']}, not ready")
+    if ms["print"]["state"] in ("printing", "paused"):
+        raise HTTPException(409, "a job is already running; stop it first")
     plan = _plan_for(st, ms)
     use_mesh = bool(plan and _mesh_covers(plan, ms))
-    mesh_skipped = bool(st.get("mesh_skipped"))
-    if not (ms and ms["datum_done"] and plan and plan.fits and (use_mesh or mesh_skipped)):
+    if not (ms["datum_done"] and plan and plan.fits and (use_mesh or st.get("mesh_skipped"))):
         raise HTTPException(409, "datum and mesh must be done for this board position first "
                                  "(or skip mesh explicitly)")
-    out = job / "out"
-    if not (out / "isolation.nc").exists():
+    if file in RUN_NAMES and not out_of_order:
+        ran = st.get("ran") or []
+        missing = [RUN_LABELS[n] for n in RUN_NAMES[:RUN_NAMES.index(file)] if n not in ran]
+        if missing:
+            raise HTTPException(409, f"{' and '.join(missing)} {'has' if len(missing) == 1 else 'have'} not run yet")
+    try:
+        names = _publish(job, st, use_mesh, extra_depth)
+    except (OSError, RuntimeError, httpx.HTTPError) as e:
+        raise HTTPException(409, f"could not prepare the run files: {e}")
+    if not names:
         raise HTTPException(409, "isolation.nc missing (double-sided jobs are not supported yet)")
-    folder = st.get("slug") or detect.slug(name)
-    sent = _prepare_run_files(job, plan, use_mesh, extra_depth)
-    for run_name in sent:
-        moonraker.upload(out / run_name, subdir=folder)
-    combined_path = out / COMBINED_NAME
-    combined_path.write_text(_combined_text([out / name for name in sent]))
-    moonraker.upload(combined_path, subdir=folder)
-    _set_status(job, sent=sent, sent_folder=folder, combined=COMBINED_NAME,
-                extra_depth=extra_depth)
-    # straight on to Fluidd's job list: that is where the cut is started
-    target = f"{moonraker.fluidd()}/#/jobs"
-    if request.headers.get("HX-Request"):
-        from fastapi import Response
-        return Response(status_code=200, headers={"HX-Redirect": target})
-    return RedirectResponse(target, status_code=303)
+    folder = _status(job).get("gcode_folder")
+    if not folder:
+        raise HTTPException(409, "the run files could not be placed where Klipper can start them")
+    try:
+        await asyncio.to_thread(moonraker.start_print, f"{folder}/{file}")
+    except moonraker.KlipperError as e:
+        raise HTTPException(409, str(e))
+    _set_status(job, last_run={"file": file, "at": time.strftime("%F %T")})
+    return _respond(request, name)
+
+
+@app.get("/machine/status", response_class=HTMLResponse)
+async def machine_status(request: Request):
+    """Is Klipper up and connected to the machine? Polled by the pages."""
+    return templates.TemplateResponse(request=request, name="_machine_status.html",
+                                      context={"link": await asyncio.to_thread(moonraker.link_status)})
