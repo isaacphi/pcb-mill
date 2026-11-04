@@ -384,6 +384,8 @@ def _job_context(request: Request, name: str) -> dict:
                  "error": "interrupted before it finished (the app restarted or Klipper stopped)"}
         _set_status(job, phase=phase)
     ms = _live() if st.get("state") == "done" else None
+    if ms and ms.get("klipper") not in (None, "ready"):
+        ms = None            # connecting / shut down: show why, not controls that would only fail
     link = moonraker.link_status() if (ms is None and st.get("state") == "done") else None
     if ms:
         st = _note_completed(job, st, ms)

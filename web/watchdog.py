@@ -8,6 +8,8 @@ for the failures that are about the link, not about the machine:
   * recovers   "Lost communication with MCU", "Unable to connect", ...
   * leaves     everything else, in particular an emergency stop (M112) or a
                machine-side fault. Those need a person (the page's Restart Klipper button).
+  * waits      while the machine's USB adapter is missing: restarting can't help, and the
+               restart budget is kept for the moment it is plugged back in.
 
 Safety rails: only after the fault has persisted for DEBOUNCE seconds, never closer than
 MIN_GAP apart, and at most MAX_ATTEMPTS per WINDOW, so a board that keeps dropping
@@ -60,10 +62,13 @@ class Watchdog:
         self.bad_since: float | None = None
         self.attempts: deque[float] = deque()
 
-    def tick(self, info: dict | None) -> str | None:
-        """One poll. -> "restarted" / "failed" when it acted, else None."""
+    def tick(self, info: dict | None, adapter: bool | None = None) -> str | None:
+        """One poll. -> "restarted" / "failed" when it acted, else None.
+
+        `adapter` is whether the machine's USB device exists. With it unplugged a restart
+        cannot help, so none is spent (the budget stays for when it comes back)."""
         global last_event
-        if info is None or info.get("state") == "ready" or not recoverable(info):
+        if info is None or info.get("state") == "ready" or not recoverable(info) or adapter is False:
             self.bad_since = None
             return None
         now = self.clock()
@@ -92,7 +97,8 @@ class Watchdog:
         while True:
             try:
                 info = await asyncio.to_thread(moonraker.info)
-                await asyncio.to_thread(self.tick, info)
+                adapter = await asyncio.to_thread(moonraker.serial_present)
+                await asyncio.to_thread(self.tick, info, adapter)
             except Exception as e:           # never let the loop die
                 log.debug("watchdog poll: %s", e)
             await asyncio.sleep(INTERVAL)

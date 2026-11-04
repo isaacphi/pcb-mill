@@ -1189,3 +1189,26 @@ def test_serial_presence_is_read_from_printer_cfg(tmp_path, monkeypatch):
     assert moonraker.serial_present() is True
     monkeypatch.setenv("PRINTER_CFG", str(tmp_path / "missing.cfg"))
     assert moonraker.serial_present() is None
+
+
+def test_watchdog_waits_for_the_usb_adapter_and_restarts_once_it_is_back(monkeypatch):
+    monkeypatch.setattr(watchdog, "last_event", None)
+    calls = []
+    dog, clock = _dog(calls)
+    for _ in range(30):                                   # unplugged for a long while
+        clock.t += 60
+        assert dog.tick(NOCONN, adapter=False) is None
+    assert calls == [] and not dog.attempts               # nothing spent
+    assert dog.tick(NOCONN, adapter=True) is None         # plugged in: debounce first...
+    clock.t += watchdog.DEBOUNCE + 1
+    assert dog.tick(NOCONN, adapter=True) == "restarted" and len(calls) == 1
+
+
+def test_job_page_explains_a_half_up_klipper_instead_of_showing_dead_controls(tmp_path, monkeypatch):
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    ms["klipper"] = "startup"
+    _job("half-up")
+    monkeypatch.setattr(moonraker, "link_status", lambda: {"state": "startup", "message": "", "adapter": False})
+    page = TestClient(webapp.app).get("/jobs/half-up").text
+    assert "connecting to the machine" in page and ">Home</button>" not in page
+    assert "Run all three" not in page
