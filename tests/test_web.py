@@ -1056,7 +1056,7 @@ def test_run_page_has_a_button_per_file_plus_run_all(tmp_path, monkeypatch):
     page = TestClient(webapp.app).get("/jobs/run-ui").text
     for label in ("Run 1 · Isolation", "Run 2 · Drill", "Run 3 · Edge cut", "Run all three"):
         assert label in page
-    assert "Send" not in page and "Fluidd" not in page          # no detour through Fluidd
+    assert "Send" not in page and "Fluidd Jobs folder" not in page   # no detour through Fluidd to start a cut
     # later files ask before running ahead of the earlier ones
     assert "Isolation has not run yet. Run drill anyway?" in page
     assert "Isolation and Drill have not run yet. Run edge cut anyway?" in page
@@ -1212,3 +1212,60 @@ def test_job_page_explains_a_half_up_klipper_instead_of_showing_dead_controls(tm
     page = TestClient(webapp.app).get("/jobs/half-up").text
     assert "connecting to the machine" in page and ">Home</button>" not in page
     assert "Run all three" not in page
+
+
+# ------------------------------------------------------------ pause / resume / fluidd link
+def test_pause_and_resume_buttons_follow_the_print_state(tmp_path, monkeypatch):
+    ms, _ = _ready(monkeypatch, tmp_path, "pr-ui", gcode_folder="pr-ui")
+    ms["print"].update(state="printing", filename="pr-ui/1_isolation.gcode", progress=0.5)
+    page = TestClient(webapp.app).get("/jobs/pr-ui").text
+    assert ">Pause</button>" in page and ">Stop</button>" in page and ">Resume</button>" not in page
+    ms["print"]["state"] = "paused"
+    page = TestClient(webapp.app).get("/jobs/pr-ui").text
+    assert ">Resume</button>" in page and ">Stop</button>" in page and ">Pause</button>" not in page
+    assert "lifted clear and the spindle is off" in page and "Paused" in page
+    assert ">Run 1" not in page                                  # nothing new can start meanwhile
+
+
+def test_pause_then_resume_call_klipper_and_check_the_state(tmp_path, monkeypatch):
+    ms, _ = _ready(monkeypatch, tmp_path, "pr-api")
+    calls = []
+    monkeypatch.setattr(moonraker, "pause", lambda: calls.append("pause"))
+    monkeypatch.setattr(moonraker, "resume", lambda: calls.append("resume"))
+    c = TestClient(webapp.app)
+    # nothing running: neither is allowed
+    assert c.post("/jobs/pr-api/pause").status_code == 409
+    assert c.post("/jobs/pr-api/resume").status_code == 409
+    ms["print"]["state"] = "printing"
+    assert c.post("/jobs/pr-api/resume").status_code == 409      # can't resume what isn't paused
+    assert c.post("/jobs/pr-api/pause", headers={"HX-Request": "true"}).status_code == 200
+    ms["print"]["state"] = "paused"
+    assert c.post("/jobs/pr-api/pause").status_code == 409       # already paused
+    assert c.post("/jobs/pr-api/resume", headers={"HX-Request": "true"}).status_code == 200
+    assert calls == ["pause", "resume"]
+    assert c.post("/jobs/nope/pause").status_code == 404
+
+
+def test_pause_surfaces_a_klipper_error(tmp_path, monkeypatch):
+    ms, _ = _ready(monkeypatch, tmp_path, "pr-err")
+    ms["print"]["state"] = "printing"
+
+    def boom():
+        raise moonraker.KlipperError("Unknown command:\"PAUSE\"")
+    monkeypatch.setattr(moonraker, "pause", boom)
+    r = TestClient(webapp.app).post("/jobs/pr-err/pause")
+    assert r.status_code == 409 and "PAUSE" in r.text
+
+
+def test_fluidd_link_on_home_and_job_pages_follows_the_host_used(tmp_path, monkeypatch):
+    _fake_machine(monkeypatch, tmp_path)
+    _job("fl-1")
+    monkeypatch.delenv("FLUIDD_URL", raising=False)
+    c = TestClient(webapp.app, base_url="http://192.168.1.50:8081")
+    for page in ("/", "/jobs/fl-1"):
+        assert 'href="http://192.168.1.50:8080"' in c.get(page).text
+    monkeypatch.setenv("FLUIDD_URL", "http://fluidd.example:9000/")
+    assert 'href="http://fluidd.example:9000"' in c.get("/").text
+    # a dev machine without Moonraker: no dangling link
+    monkeypatch.setattr(moonraker, "control_available", lambda: False)
+    assert "Fluidd" not in c.get("/").text

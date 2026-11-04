@@ -312,3 +312,52 @@ def test_to_start_is_xy_only_and_needs_homing():
     assert lines == ["G90", "G0 X5.0 Y5.0 F3000"]
     with pytest.raises(MacroError, match="not homed"):
         render("PCB_TO_START", {"X": "5", "Y": "5"}, fake_printer(homed=""))
+
+
+# ------------------------------------------------------- PAUSE / RESUME / CANCEL_PRINT
+def _pr(paused, lifted=0, lift=None):
+    pr = fake_printer()
+    pr["pause_resume"] = {"is_paused": 1 if paused else 0}
+    pr["save_variables"] = {"variables": {} if lift is None else {"lift_mm": lift}}
+    pr["gcode_macro PAUSE"] = {"lifted": lifted}
+    return pr
+
+
+def test_pause_lifts_the_bit_before_the_spindle_stops():
+    lines, _ = render("PAUSE", printer=_pr(False))
+    assert lines == ["SAVE_GCODE_STATE NAME=PCB_PAUSE", "BASE_PAUSE", "G91", "G1 Z10.0 F600", "G90", "M5",
+                     "SET_GCODE_VARIABLE MACRO=PAUSE VARIABLE=lifted VALUE=10.0"]
+    assert lines.index("G1 Z10.0 F600") < lines.index("M5")        # never stall the bit in the copper
+
+
+def test_pause_uses_the_configured_lift_and_is_a_noop_when_already_paused():
+    lines, _ = render("PAUSE", printer=_pr(False, lift=6))
+    assert "G1 Z6.0 F600" in lines and "SET_GCODE_VARIABLE MACRO=PAUSE VARIABLE=lifted VALUE=6.0" in lines
+    assert render("PAUSE", printer=_pr(True, lifted=6))[0] == []   # a second Pause must not lift again
+
+
+def test_resume_starts_the_spindle_before_lowering_by_exactly_the_lift():
+    lines, _ = render("RESUME", printer=_pr(True, lifted=10.0))
+    assert lines == ["M3", "G4 P2000", "G91", "G1 Z-10.0 F300", "G90",
+                     "SET_GCODE_VARIABLE MACRO=PAUSE VARIABLE=lifted VALUE=0",
+                     "RESTORE_GCODE_STATE NAME=PCB_PAUSE MOVE=0", "BASE_RESUME"]
+    assert lines.index("M3") < lines.index("G1 Z-10.0 F300")       # spin up first, then plunge back
+    assert render("RESUME", printer=_pr(False))[0] == []           # nothing to resume
+
+
+def test_resume_goes_back_down_by_what_pause_lifted():
+    lifted = float(render("PAUSE", printer=_pr(False, lift=7.5))[0][-1].rsplit("=", 1)[1])
+    lines, _ = render("RESUME", printer=_pr(True, lifted=lifted))
+    assert f"G1 Z-{lifted} F300" in lines
+
+
+def test_cancel_lifts_then_turns_the_spindle_off():
+    lines, _ = render("CANCEL_PRINT", printer=_pr(False))
+    assert lines == ["BASE_CANCEL_PRINT", "G91", "G1 Z10.0 F600", "G90", "M5",
+                     "SET_GCODE_VARIABLE MACRO=PAUSE VARIABLE=lifted VALUE=0"]
+    assert lines.index("G1 Z10.0 F600") < lines.index("M5")
+
+
+def test_cancel_while_paused_does_not_lift_a_second_time():
+    lines, _ = render("CANCEL_PRINT", printer=_pr(True, lifted=10.0))
+    assert not any(ln.startswith("G1 Z") for ln in lines) and "M5" in lines and "BASE_CANCEL_PRINT" in lines

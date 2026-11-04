@@ -9,7 +9,7 @@
 </head>
 <body>
 <main>
-<p><a href="/">← jobs</a></p>
+<p><a href="/">← jobs</a>{% if fluidd %} &nbsp;·&nbsp; <a href="{{ fluidd }}" target="_blank" rel="noopener">Fluidd ↗</a>{% endif %}</p>
 <h1>{{ st.title or name }} <span class="dim">{{ st.state }}{% if st.side %}, {{ st.side }} copper{% endif %}</span></h1>
 <details class="rename">
   <summary>Rename job</summary>

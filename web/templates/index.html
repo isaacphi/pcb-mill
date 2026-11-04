@@ -9,6 +9,7 @@
 <body>
 <main>
 <h1>pcb-mill</h1>
+{% if fluidd %}<p class="dim"><a href="{{ fluidd }}" target="_blank" rel="noopener">Open Fluidd ↗</a></p>{% endif %}
 <div id="machine" hx-get="/machine/status" hx-trigger="load, every 5s" hx-swap="innerHTML"></div>
 
 <form id="up" method="post" action="/upload" enctype="multipart/form-data">

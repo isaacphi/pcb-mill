@@ -86,6 +86,16 @@ def cancel() -> None:
         raise KlipperError(_error_message(r))
 
 
+def pause() -> None:
+    """PAUSE: lifts the bit and stops the spindle (see the PAUSE macro in printer.cfg)."""
+    _post("/printer/print/pause")
+
+
+def resume() -> None:
+    """RESUME: spindle on, bit back down, carry on."""
+    _post("/printer/print/resume")
+
+
 def _post(path: str) -> None:
     base = _api()
     if not base:
@@ -179,8 +189,13 @@ def query(objects: str) -> dict:
     return r.json()["result"]["status"]
 
 
-def fluidd() -> str:
-    return os.environ.get("FLUIDD_URL", "http://pcb-mill.local:8080").rstrip("/")
+def fluidd(host: str | None = None) -> str:
+    """Fluidd's address: FLUIDD_URL if set, else port 8080 on whatever host the browser used
+    to reach this page (so it works by IP, hostname or .local alike)."""
+    env = os.environ.get("FLUIDD_URL", "").strip()
+    if env:
+        return env.rstrip("/")
+    return f"http://{host or 'pcb-mill.local'}:8080"
 
 
 def upload(path: Path, subdir: str = "") -> dict:

@@ -59,11 +59,25 @@
 <p class="dim">{{ st.board.w }} × {{ st.board.h }} mm; origin {% if ms.origin %}X{{ "%.1f"|format(ms.origin[0]) }} Y{{ "%.1f"|format(ms.origin[1]) }}{% else %}<b>not set</b>{% endif %}; bit X{{ "%.1f"|format(ms.position[0]) }} Y{{ "%.1f"|format(ms.position[1]) }}; homed {{ ms.homed or "no" }}</p>
 
 {% if printing %}
+  {% if paused %}
+<div class="processing paused"><div class="pause-icon" aria-hidden="true"></div>
+  <div><b>Paused</b> <code>{{ (ms.print.get("filename") or "").split("/")[-1] }}</code>
+    {% if ms.print.get("progress") %}<b>{{ (ms.print.progress * 100)|round|int }}%</b>{% endif %}
+    <div class="dim">The bit is lifted clear and the spindle is off. Don't move the board.</div></div></div>
+<div class="runrow">
+{{ act("resume", "Resume", "", "Resume the cut? The spindle starts, then the bit goes back down to where it was.") }}
+{{ act("stop", "Stop", "danger", "Stop the job for good? You can't resume it afterwards.") }}
+</div>
+  {% else %}
 <div class="processing"><div class="spinner"></div>
   <div><b>Cutting</b> <code>{{ (ms.print.get("filename") or "").split("/")[-1] }}</code>
     {% if ms.print.get("progress") %}<b>{{ (ms.print.progress * 100)|round|int }}%</b>{% endif %}</div></div>
-{{ act("stop", "Stop", "danger", "Stop the current job? It stops after the current move.") }}
+<div class="runrow">
+{{ act("pause", "Pause", "secondary", "Pause the cut? The bit lifts clear and the spindle stops. You can resume afterwards.") }}
+{{ act("stop", "Stop", "danger", "Stop the job for good? You can't resume it afterwards.") }}
+</div>
 <p class="dim">Don't home or move the board between files.</p>
+  {% endif %}
 {% elif phase and phase.state == "running" %}
 <div class="processing"><div class="spinner"></div>
   <div><b>{{ phase.name }}</b> <code>{{ phase.script }}</code></div></div>

@@ -158,7 +158,8 @@ async def _convert(job: Path, copper: str, side: str, edge: str, drill: str, con
 async def index(request: Request):
     inv = config_render.load_inventory()
     return templates.TemplateResponse(request=request, name="index.html", context={
-        "inv": inv, "recent": _recent_jobs()})
+        "inv": inv, "recent": _recent_jobs(),
+        "fluidd": moonraker.fluidd(request.url.hostname) if moonraker.control_available() else None})
 
 
 def _recent_jobs(limit: int = 30) -> list[dict]:
@@ -405,10 +406,11 @@ def _job_context(request: Request, name: str) -> dict:
     print_state = (ms or {}).get("print", {}).get("state", "standby")
     return {"request": request, "name": name, "st": st, "log": log, "elapsed": elapsed,
             "moonraker_control": moonraker.control_available(),
-            "fluidd": moonraker.fluidd(), "ms": ms, "plan": plan, "steps": steps,
+            "fluidd": moonraker.fluidd(request.url.hostname) if moonraker.control_available() else None, "ms": ms, "plan": plan, "steps": steps,
             "auto_restart": watchdog.recent_event(), "link": link,
             "run_buttons": _run_buttons(st),
             "phase": phase, "printing": print_state in ("printing", "paused"),
+            "paused": print_state == "paused",
             "datum_depth": DATUM_DEPTH_MM}
 
 
@@ -507,6 +509,34 @@ async def stop_job(request: Request, name: str):
         raise HTTPException(409, "Moonraker control not available")
     try:
         await asyncio.to_thread(moonraker.cancel)
+    except moonraker.KlipperError as e:
+        raise HTTPException(409, str(e))
+    return _respond(request, name)
+
+
+@app.post("/jobs/{name}/pause")
+async def pause_job(request: Request, name: str):
+    """Lift the bit clear and stop the spindle (PAUSE macro); the job stays resumable."""
+    return await _print_control(request, name, "pause", "printing", "no job is running")
+
+
+@app.post("/jobs/{name}/resume")
+async def resume_job(request: Request, name: str):
+    """Spindle on, spin up, lower the bit back to where it was, continue (RESUME macro)."""
+    return await _print_control(request, name, "resume", "paused", "no job is paused")
+
+
+async def _print_control(request: Request, name: str, action: str, needs: str, why_not: str):
+    job = JOBS / name
+    if not job.is_dir():
+        raise HTTPException(404)
+    if not moonraker.control_available():
+        raise HTTPException(409, "Moonraker control not available")
+    ms = _live()
+    if not ms or ms["print"]["state"] != needs:
+        raise HTTPException(409, why_not)
+    try:
+        await asyncio.to_thread(getattr(moonraker, action))
     except moonraker.KlipperError as e:
         raise HTTPException(409, str(e))
     return _respond(request, name)
