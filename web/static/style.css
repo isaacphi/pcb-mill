@@ -117,9 +117,10 @@ label { display: inline-block; margin: .3rem 1rem .3rem 0; }
 details { margin: 1rem 0; }
 summary { cursor: pointer; font-weight: 600; }
 details.log summary { font-weight: normal; color: var(--muted); }
-details.rename { margin: -.4rem 0 1rem; }
+details.rename { margin: .5rem 0; }
 details.rename summary { font-size: .85rem; font-weight: normal; color: var(--muted); }
-details.rename form { margin-top: .4rem; }
+details.rename form { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-top: .5rem; }
+details.rename form label { margin: 0; }
 details.rename input { width: 18em; }
 details.rename button { padding: .25rem .7rem; font-size: .8rem; }
 
@@ -135,7 +136,7 @@ table.mesh { display: block; max-width: 100%; overflow-x: auto; }
 table.mesh td { text-align: right; font-family: var(--font-display); font-size: .78rem; padding: .2rem .35rem; }
 
 pre { padding: .8rem; overflow-x: auto; background: var(--subtle); font-size: .82rem; }
-img.preview { max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+img.preview { display: block; max-width: 100%; margin-top: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-sm); }
 
 ol.steps {
   display: flex;
@@ -173,7 +174,7 @@ ol.steps li.current { background: var(--accent); color: var(--surface); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 form.jog { margin: .6rem 0; }
-form.jog button { padding: .3rem .7rem; margin: 0 .15rem; }
+form.jog button { padding: .3rem .7rem; margin: .15rem; }
 #drop > b { display: block; }
 #drop {
   margin: 1rem 0;
@@ -184,8 +185,31 @@ form.jog button { padding: .3rem .7rem; margin: 0 .15rem; }
   border-radius: var(--radius);
 }
 #drop.over { background: var(--accent-soft); border-color: var(--accent); }
-#found { display: inline-block; margin: .8rem 0; padding: 0; list-style: none; text-align: left; }
-#found li { font-size: .9rem; }
+#found {
+  display: block;
+  max-width: min(100%, 32rem);
+  margin: .8rem auto;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+#found li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6rem;
+  padding: .15rem 0;
+  font-size: .9rem;
+}
+#found .fname { overflow-wrap: anywhere; }
+#found li.ok .fname { color: var(--ok); }
+#found select.role {
+  flex: none;
+  max-width: 15em;
+  min-height: 32px;
+  padding: .15rem .35rem;
+  font-size: .82em;
+}
 label.link { color: var(--accent-ink); text-decoration: underline; cursor: pointer; }
 .visually-hidden {
   position: absolute;
@@ -217,3 +241,15 @@ label.link { color: var(--accent-ink); text-decoration: underline; cursor: point
     scroll-behavior: auto !important;
   }
 }
+
+form.delete { margin: .8rem 0 1.2rem; }
+form.delete button { min-height: 0; padding: .25rem .7rem; font-size: .8rem; }
+details.rename #drop { margin: .6rem 0; }
+button.small { min-height: 0; padding: .2rem .6rem; font-size: .8rem; }
+table.jobs form { margin: 0; }
+
+/* action buttons on the job page: a gap between stacked buttons and around the Send row */
+#job-body > form { margin: .8rem 0; }
+#send-form { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1.2rem; }
+#send-form .warn { flex-basis: 100%; margin: 0; }
+#send-form label { margin: 0; }

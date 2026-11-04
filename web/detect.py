@@ -13,6 +13,21 @@ from collections import Counter
 COPPER_TOP, COPPER_BOTTOM, EDGE = "copper_top", "copper_bottom", "edge"
 DRILL_PTH, DRILL_NPTH, DRILL = "drill_pth", "drill_npth", "drill"
 IGNORE = "ignore"
+# a role the user did not override: classify() decides from the file contents
+AUTO = "auto"
+
+# roles offered in the upload page's per-file dropdown, in display order
+ROLE_LABELS = [
+    (COPPER_TOP, "top copper"),
+    (COPPER_BOTTOM, "bottom copper"),
+    (EDGE, "board outline"),
+    (DRILL_PTH, "drills (plated / PTH)"),
+    (DRILL_NPTH, "drills (non-plated / NPTH)"),
+    (DRILL, "drills (unspecified)"),
+    (IGNORE, "ignore"),
+]
+VALID_ROLES = frozenset(role for role, _ in ROLE_LABELS)
+LABELS = dict(ROLE_LABELS)
 
 _TF = re.compile(r"%TF\.FileFunction,([^*%]+)")
 _XLN = re.compile(r";\s*#@!\s*TF\.FileFunction,([^\r\n]+)")
@@ -59,6 +74,27 @@ def classify(name: str, data: bytes) -> str:
     return IGNORE
 
 
+def resolve_roles(files: list[tuple[str, bytes]], manual: list[str] | None = None) -> list[str]:
+    """One role per file, in the order given.
+
+    `manual[i]` is the role the user picked for `files[i]`; empty or `AUTO`
+    leaves it to classify(). A manual pick always wins, even when the file's
+    own metadata says otherwise.
+    """
+    if manual and len(manual) != len(files):
+        raise DetectError("file type selections do not match the uploaded files")
+    roles = []
+    for i, (name, data) in enumerate(files):
+        choice = (manual[i] if manual else "").strip()
+        if not choice or choice == AUTO:
+            roles.append(classify(name, data))
+        elif choice in VALID_ROLES:
+            roles.append(choice)
+        else:
+            raise DetectError(f"{name}: unknown file type {choice!r}")
+    return roles
+
+
 def board_name(names: list[str]) -> str:
     """'AQI esp32 pcb-F_Cu.gbr' -> 'AQI esp32 pcb' (most common stem)."""
     stems = Counter()
@@ -81,22 +117,26 @@ class DetectError(ValueError):
     pass
 
 
-def assign(files: list[tuple[str, bytes]], side: str | None = None) -> dict:
+def assign(files: list[tuple[str, bytes]], manual: list[str] | None = None) -> dict:
     """Pick the inputs mill.py needs from a pile of files.
+
+    `manual` overrides the auto-detected role per file (same order as `files`);
+    empty entries fall back to content-then-name detection.
 
     -> {"copper": (name, data), "side": "top"|"bottom", "edge": ..., "drill": ...,
         "drill2": ... or None, "title": str, "roles": {name: role}}
     Raises DetectError with a message the user can act on.
     """
-    roles = {n: classify(n, d) for n, d in files}
+    roles = resolve_roles(files, manual)
     by_role: dict[str, list[tuple[str, bytes]]] = {}
-    for (n, d) in files:
-        by_role.setdefault(roles[n], []).append((n, d))
+    for item, role in zip(files, roles):
+        by_role.setdefault(role, []).append(item)
 
     def one(role, what, required=True):
         got = by_role.get(role, [])
         if len(got) > 1:
-            raise DetectError(f"more than one {what} file: " + ", ".join(n for n, _ in got))
+            raise DetectError(f"more than one {what} file: " + ", ".join(n for n, _ in got)
+                              + " - set the file type by hand if that is wrong")
         if not got and required:
             raise DetectError(f"no {what} file recognised")
         return got[0] if got else None
@@ -105,10 +145,9 @@ def assign(files: list[tuple[str, bytes]], side: str | None = None) -> dict:
     if not top and not bot:
         raise DetectError("no copper layer recognised (expected e.g. *-F_Cu.gbr or *-B_Cu.gbr)")
     if top and bot:
-        side = side if side in ("top", "bottom") else "bottom"
-    else:
-        side = "top" if top else "bottom"
-    copper = top if side == "top" else bot
+        raise DetectError("both top and bottom copper selected - set the one you don't want to mill to ignore")
+    side = "top" if top else "bottom"
+    copper = top or bot
 
     pth, npth, generic = one(DRILL_PTH, "plated drill", False), one(DRILL_NPTH, "non-plated drill", False), by_role.get(DRILL, [])
     if not pth and generic:
@@ -118,7 +157,7 @@ def assign(files: list[tuple[str, bytes]], side: str | None = None) -> dict:
     drill, drill2 = (pth, npth) if pth else (npth, None)
     return {
         "copper": copper, "side": side, "edge": one(EDGE, "board outline (Edge_Cuts)"),
-        "drill": drill, "drill2": drill2, "roles": roles,
+        "drill": drill, "drill2": drill2, "roles": dict(zip((n for n, _ in files), roles)),
         "layers": {"top": bool(top), "bottom": bool(bot)},
         # a job is named after its copper Gerber (`board-F_Cu.gbr` -> `board`),
         # not after whichever file happens to be most common in the pile.

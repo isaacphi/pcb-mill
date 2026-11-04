@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ st.title or name }}</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/htmx.min.js"></script>
+  <link rel="stylesheet" href="{{ asset('style.css') }}">
+  <script src="{{ asset('htmx.min.js') }}"></script>
 </head>
 <body>
 <main>
@@ -18,6 +18,18 @@
     <button class="secondary">Rename</button>
   </form>
 </details>
+<details class="rename">
+  <summary>Replace Gerbers</summary>
+  <form id="up" method="post" action="/jobs/{{ name }}/replace" enctype="multipart/form-data">
+    {% set replacing = True %}{% include "_dropzone.html" %}
+    <p class="dim">Keeps the name and cutting parameters. Toolpaths, board setup and mesh progress are discarded and the job is converted again.</p>
+    <button id="go" type="submit" disabled>Replace and convert</button>
+  </form>
+</details>
+<form method="post" action="/jobs/{{ name }}/delete" class="delete"
+      onsubmit="return confirm('Delete this job and its files? This cannot be undone.')">
+  <button class="danger">Delete job</button>
+</form>
 <p id="flash" class="err" role="alert"></p>
 {# poll, but never while a field is being edited #}
 <div id="job-body" hx-get="/jobs/{{ name }}/fragment" hx-trigger="every 2s" hx-swap="innerHTML">
@@ -31,6 +43,7 @@ document.body.addEventListener("htmx:responseError", e => {
 });
 document.body.addEventListener("htmx:beforeRequest", () => { document.getElementById("flash").textContent = ""; });
 </script>
+<script src="{{ asset('upload.js') }}"></script>
 </main>
 </body>
 </html>

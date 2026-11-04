@@ -4,6 +4,7 @@ and an end-to-end conversion of the sample board through the real mill.py."""
 import asyncio
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -690,10 +691,32 @@ def test_detect_generic_edge_gbr_by_name():
     assert a["title"] == "board"          # named from the copper file, not the pile
 
 
-def test_detect_two_copper_layers_uses_requested_side():
+def test_detect_two_copper_layers_must_be_resolved_by_hand():
     files = _board_files() + [("AQI esp32 pcb-B_Cu.gbr", b"%TF.FileFunction,Copper,L2,Bot*%\nG04*")]
-    assert detect.assign(files)["side"] == "bottom"
-    assert detect.assign(files, "top")["side"] == "top"
+    with pytest.raises(detect.DetectError, match="both"):
+        detect.assign(files)
+    names = [n for n, _ in files]
+    manual = ["ignore" if n.endswith("F_Cu.gbr") else "" for n in names]
+    assert detect.assign(files, manual)["side"] == "bottom"
+    manual = ["ignore" if n.endswith("B_Cu.gbr") else "" for n in names]
+    assert detect.assign(files, manual)["side"] == "top"
+
+
+def test_manual_role_overrides_metadata():
+    files = _board_files()
+    manual = ["copper_bottom" if n.endswith("F_Cu.gbr") else "" for n, _ in files]
+    a = detect.assign(files, manual)
+    assert a["side"] == "bottom" and a["copper"][0].endswith("F_Cu.gbr")
+    with pytest.raises(detect.DetectError, match="unknown"):
+        detect.assign(files, ["bogus"] * len(files))
+
+
+def test_detect_endpoint_lists_roles(monkeypatch):
+    with TestClient(webapp.app) as c:
+        r = c.post("/detect", files=[("files", (n, d)) for n, d in _board_files()]).json()
+        roles = {f["name"]: f["role"] for f in r["files"]}
+        assert roles["AQI esp32 pcb-F_Cu.gbr"] == "copper_top"
+        assert {"value": "ignore", "label": "ignore"} in r["choices"]
 
 
 def test_upload_endpoint_creates_a_named_job(monkeypatch):
@@ -719,3 +742,299 @@ def test_upload_endpoint_creates_a_named_job(monkeypatch):
         name2 = r.headers["location"].rsplit("/", 1)[1]
         st2 = json.loads((Path(os.environ["PCB_MILL_JOBS"]) / name2 / "status.json").read_text())
         assert st2["title"] == "My Board" and st2["slug"] == "My-Board"
+
+
+# ------------------------------------------------------------ delete + replace files
+def _upload_job(c, **data):
+    r = c.post("/upload", files=[("files", (n, d)) for n, d in _board_files()],
+               data=data, follow_redirects=False)
+    assert r.status_code == 303
+    return r.headers["location"].rsplit("/", 1)[1]
+
+
+def _jobdir(name):
+    return Path(os.environ["PCB_MILL_JOBS"]) / name
+
+
+def _no_convert(monkeypatch):
+    started = []
+
+    async def fake_convert(*a, **k):
+        started.append(a)
+    monkeypatch.setattr(webapp, "_convert", fake_convert)
+    return started
+
+
+def test_delete_job_removes_folder(monkeypatch):
+    _no_convert(monkeypatch)
+    with TestClient(webapp.app) as c:
+        name = _upload_job(c, title="To Delete")
+        webapp._set_status(_jobdir(name), state="done")
+        assert _jobdir(name).is_dir()
+        r = c.post(f"/jobs/{name}/delete", follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/"
+        assert not _jobdir(name).exists()
+        assert c.post(f"/jobs/{name}/delete").status_code == 404
+        assert c.post("/jobs/..%2F/delete").status_code == 404
+
+
+def test_delete_and_replace_refused_while_converting(monkeypatch):
+    _no_convert(monkeypatch)
+    with TestClient(webapp.app) as c:
+        name = _upload_job(c, title="Busy")           # fake convert leaves state "queued"
+        assert c.post(f"/jobs/{name}/delete").status_code == 409
+        files = [("files", (n, d)) for n, d in _board_files()]
+        assert c.post(f"/jobs/{name}/replace", files=files).status_code == 409
+        assert _jobdir(name).is_dir()
+
+
+def test_replace_files_restarts_conversion_and_keeps_name_and_params(monkeypatch):
+    started = _no_convert(monkeypatch)
+    with TestClient(webapp.app) as c:
+        name = _upload_job(c, title="Keep Me", **{"isolation.tool_diameter": "0.3"})
+        job = _jobdir(name)
+        cfg_before = (job / "mill_config.yaml").read_text()
+        # pretend the job finished and progressed on the machine
+        webapp._set_status(job, state="done", board_ready=True, sent=["isolation.nc"],
+                           extents=[0, 0, 1, 1], toolpaths="out/toolpaths.png")
+        (job / "out").mkdir()
+        (job / "out" / "isolation.nc").write_text("G0")
+        (job / "log.txt").write_text("old log")
+
+        files = [(n, d) for n, d in _board_files()]
+        # new copper file given a mystery name; the dropdown says what it is
+        files = [("renamed.bin" if n.endswith("F_Cu.gbr") else n, d) for n, d in files]
+        r = c.post(f"/jobs/{name}/replace", files=[("files", f) for f in files],
+                   data={"role": ["copper_bottom" if n == "renamed.bin" else "" for n, _ in files]},
+                   follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == f"/jobs/{name}"
+
+        st = json.loads((job / "status.json").read_text())
+        assert st["state"] == "queued" and st["title"] == "Keep Me" and st["side"] == "bottom"
+        for stale in ("board_ready", "sent", "extents", "toolpaths"):
+            assert stale not in st
+        assert not (job / "out").exists() and not (job / "log.txt").exists()
+        assert (job / "mill_config.yaml").read_text() == cfg_before
+        assert (job / "copper.bin").exists() and (job / "drill.drl").exists()
+        assert len(started) == 2                      # once for the upload, once for the replace
+
+
+def test_replace_files_rejects_bad_upload_without_touching_the_job(monkeypatch):
+    _no_convert(monkeypatch)
+    with TestClient(webapp.app) as c:
+        name = _upload_job(c, title="Intact")
+        webapp._set_status(_jobdir(name), state="done")
+        r = c.post(f"/jobs/{name}/replace", files=[("files", ("x.txt", b"nope"))])
+        assert r.status_code == 400
+        assert (_jobdir(name) / "copper.gbr").exists()
+        assert c.post("/jobs/nope/replace", files=[("files", ("x.txt", b"n"))]).status_code == 404
+
+
+def test_job_and_index_pages_offer_delete_and_replace(monkeypatch):
+    _no_convert(monkeypatch)
+    with TestClient(webapp.app) as c:
+        name = _upload_job(c, title="UI")
+        page = c.get(f"/jobs/{name}").text
+        assert f'action="/jobs/{name}/replace"' in page and f'action="/jobs/{name}/delete"' in page
+        assert 'id="nameRow"' not in page            # replace keeps the existing name
+        assert f'action="/jobs/{name}/delete"' in c.get("/").text
+
+
+def test_page_goes_straight_to_send_when_machine_is_already_located_and_meshed(tmp_path, monkeypatch):
+    """A fresh page load must not restart the homing steps just because this job's own
+    setup flags are unset (new job, replaced files, another browser) when Klipper
+    already has the origin, datum and a covering mesh."""
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job("wf-live", setup_done=False, board_ready=False)
+    plan = probe.mesh_plan((0.8, 0.8, 90.0, 88.0), (25.4, 27.5))
+    ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
+                      matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
+    page = TestClient(webapp.app).get(f"/jobs/{job.name}").text
+    assert "Send to Fluidd" in page
+    assert "Home &amp; move bed forward" not in page and "Board attached" not in page
+    assert 'class="done">Set up board' in page
+
+
+def test_page_still_walks_the_steps_when_machine_is_not_located(tmp_path, monkeypatch):
+    # same unset flags, but no datum/mesh yet: the setup steps must still be offered
+    _fake_machine(monkeypatch, tmp_path, datum_done=False)
+    job = _job("wf-notlive", setup_done=False, board_ready=False)
+    page = TestClient(webapp.app).get(f"/jobs/{job.name}").text
+    assert "Home &amp; move bed forward" in page and "Send to Fluidd" not in page
+
+
+# ------------------------------------------------------------ mesh recovery
+def _meshed(monkeypatch, tmp_path, **st):
+    ms, _ = _fake_machine(monkeypatch, tmp_path, datum_done=True)
+    job = _job("wf-mesh", **st)
+    plan = probe.mesh_plan((0.8, 0.8, 90.0, 88.0), (25.4, 27.5))
+    return ms, job, plan
+
+
+def test_interrupted_phase_does_not_leave_the_page_stuck(tmp_path, monkeypatch):
+    """status.json says 'running' but this process is not running it (app restart,
+    Klipper dropped): the page must offer Probe/Skip again instead of a spinner."""
+    _meshed(monkeypatch, tmp_path, phase={"name": "mesh", "state": "running", "script": "PCB_MESH"})
+    page = TestClient(webapp.app).get("/jobs/wf-mesh").text
+    assert "mesh failed: interrupted" in page
+    assert ">Probe mesh</button>" in page and "Skip mesh" in page
+    assert "spinner" not in page
+    st = json.loads((Path(os.environ["PCB_MILL_JOBS"]) / "wf-mesh" / "status.json").read_text())
+    assert st["phase"]["state"] == "error"
+
+
+def test_running_phase_in_this_process_still_shows_progress_and_abort(tmp_path, monkeypatch):
+    _meshed(monkeypatch, tmp_path, phase={"name": "mesh", "state": "running", "script": "PCB_MESH"})
+    webapp._RUNNING.add("wf-mesh")
+    try:
+        page = TestClient(webapp.app).get("/jobs/wf-mesh").text
+    finally:
+        webapp._RUNNING.discard("wf-mesh")
+    assert "spinner" in page and "Abort (emergency stop)" in page
+
+
+def test_abort_emergency_stops_and_frees_the_page(tmp_path, monkeypatch):
+    _meshed(monkeypatch, tmp_path, phase={"name": "mesh", "state": "running", "script": "PCB_MESH"})
+    calls = []
+    monkeypatch.setattr(moonraker, "emergency_stop", lambda: calls.append("m112"))
+    webapp._RUNNING.add("wf-mesh")
+    c = TestClient(webapp.app)
+    r = c.post("/jobs/wf-mesh/abort", headers={"HX-Request": "true"})
+    assert r.status_code == 200 and calls == ["m112"]
+    assert "stopped by you" in r.text and "wf-mesh" not in webapp._RUNNING
+    # nothing running any more -> refuse
+    assert c.post("/jobs/wf-mesh/abort").status_code == 409
+
+
+def test_klipper_restart_offered_when_klipper_is_down(tmp_path, monkeypatch):
+    _fake_machine(monkeypatch, tmp_path)
+    _job("wf-down")
+
+    def boom():
+        raise RuntimeError("down")
+    monkeypatch.setattr(moonraker, "machine_state", boom)
+    calls = []
+    monkeypatch.setattr(moonraker, "firmware_restart", lambda: calls.append("fr"))
+    c = TestClient(webapp.app)
+    assert "Restart Klipper" in c.get("/jobs/wf-down").text
+    assert c.post("/jobs/wf-down/klipper-restart", follow_redirects=False).status_code == 303 and calls == ["fr"]
+    webapp._RUNNING.add("wf-down")
+    try:
+        assert c.post("/jobs/wf-down/klipper-restart").status_code == 409
+    finally:
+        webapp._RUNNING.discard("wf-down")
+
+
+def test_mesh_can_be_redone_or_swapped_for_skip_afterwards(tmp_path, monkeypatch):
+    ms, job, plan = _meshed(monkeypatch, tmp_path)
+    ms["mesh"].update(profile="default", min=[plan.x0, plan.y0], max=[plan.x1, plan.y1],
+                      matrix=[[0.0, 0.1], [0.05, 0.2]], lo=0.0, hi=0.2)
+    page = TestClient(webapp.app).get("/jobs/wf-mesh").text
+    assert "Send to Fluidd" in page and ">Redo mesh</button>" in page
+
+    # skipped (no mesh on the machine): Send is available and the mesh can still be probed
+    ms["mesh"].update(profile="", min=None, max=None, matrix=[], lo=None, hi=None)
+    webapp._set_status(job, mesh_skipped=True)
+    page = TestClient(webapp.app).get("/jobs/wf-mesh").text
+    assert "Mesh skipped" in page and ">Probe mesh instead</button>" in page and "Send to Fluidd" in page
+
+
+def test_static_assets_are_versioned_so_deploys_beat_the_browser_cache():
+    page = TestClient(webapp.app).get("/").text
+    assert re.search(r'/static/style\.css\?v=\d+', page)
+    assert re.search(r'/static/upload\.js\?v=\d+', page)
+
+
+# ------------------------------------------------------------ klipper watchdog
+from web import watchdog  # noqa: E402
+
+LOST = {"state": "shutdown", "state_message": "Lost communication with MCU 'mcu'\nOnce the underlying..."}
+NOCONN = {"state": "error", "state_message": "mcu 'mcu': Unable to connect\nOnce..."}
+ESTOP = {"state": "shutdown", "state_message": "Shutdown due to M112 command\nOnce the underlying..."}
+
+
+class _Clock:
+    t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _dog(restarts):
+    clock = _Clock()
+    return watchdog.Watchdog(restart=lambda: restarts.append(clock.t), clock=clock), clock
+
+
+def test_watchdog_recovers_a_lost_mcu_after_debounce(monkeypatch):
+    monkeypatch.setattr(watchdog, "last_event", None)
+    calls = []
+    dog, clock = _dog(calls)
+    assert dog.tick(LOST) is None and not calls            # first sighting: wait
+    clock.t += watchdog.DEBOUNCE - 1
+    assert dog.tick(LOST) is None and not calls
+    clock.t += 2
+    assert dog.tick(LOST) == "restarted" and len(calls) == 1
+    assert watchdog.recent_event()["reason"].startswith("Lost communication")
+    # a failed-to-connect Klipper counts too
+    dog2, c2 = _dog(calls)
+    dog2.tick(NOCONN)
+    c2.t += watchdog.DEBOUNCE + 1
+    assert dog2.tick(NOCONN) == "restarted"
+
+
+def test_watchdog_never_undoes_an_emergency_stop_or_acts_when_healthy():
+    calls = []
+    dog, clock = _dog(calls)
+    for info in (ESTOP, {"state": "ready", "state_message": "Printer is ready"}, None,
+                 {"state": "startup", "state_message": "Startup"}):
+        for _ in range(5):
+            clock.t += 60
+            assert dog.tick(info) is None
+    assert calls == []
+
+
+def test_watchdog_is_rate_limited_so_a_flapping_board_is_not_restarted_in_a_loop():
+    calls = []
+    dog, clock = _dog(calls)
+    dog.tick(LOST)
+    clock.t += watchdog.DEBOUNCE + 1
+    assert dog.tick(LOST) == "restarted"
+    clock.t += 5                                           # still down, too soon
+    assert dog.tick(LOST) is None and len(calls) == 1
+    for _ in range(20):                                    # keeps failing every MIN_GAP
+        clock.t += watchdog.MIN_GAP + 1
+        dog.tick(LOST)
+    assert len(calls) == watchdog.MAX_ATTEMPTS             # then it stops
+    clock.t += watchdog.WINDOW + 1                         # a long quiet spell resets the budget
+    assert dog.tick(LOST) == "restarted"
+
+
+def test_watchdog_survives_a_failing_restart_call(monkeypatch):
+    monkeypatch.setattr(watchdog, "last_event", None)
+
+    def boom():
+        raise RuntimeError("moonraker down")
+    clock = _Clock()
+    dog = watchdog.Watchdog(restart=boom, clock=clock)
+    dog.tick(LOST)
+    clock.t += watchdog.DEBOUNCE + 1
+    assert dog.tick(LOST) == "failed" and watchdog.recent_event()["ok"] is False
+
+
+def test_job_page_tells_you_klipper_was_restarted_automatically(tmp_path, monkeypatch):
+    _fake_machine(monkeypatch, tmp_path)
+    _job("wf-wd")
+    monkeypatch.setattr(watchdog, "last_event", {"at": time.time(), "reason": "Lost communication", "ok": True})
+    page = TestClient(webapp.app).get("/jobs/wf-wd").text
+    assert "restarted automatically" in page
+    monkeypatch.setattr(watchdog, "last_event", {"at": time.time() - 7200, "reason": "x", "ok": True})
+    assert "restarted automatically" not in TestClient(webapp.app).get("/jobs/wf-wd").text
+
+
+def test_watchdog_only_runs_where_moonraker_is_configured(monkeypatch):
+    monkeypatch.delenv("MOONRAKER_URL", raising=False)
+    assert not watchdog.enabled()
+    monkeypatch.setenv("MOONRAKER_URL", "http://127.0.0.1:7125")
+    assert watchdog.enabled()
+    monkeypatch.setenv("PCB_MILL_WATCHDOG", "0")
+    assert not watchdog.enabled()

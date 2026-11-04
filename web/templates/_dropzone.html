@@ -1,0 +1,8 @@
+  <div id="drop">
+    <b>Drop Gerbers and drill files here</b>
+    <span class="dim">or <label class="link">choose files<input id="pick" type="file" name="files" multiple class="visually-hidden"></label></span>
+    <ul id="found"></ul>
+    {% if not replacing %}<label id="nameRow" hidden>Job name
+      <input id="jobName" name="title" maxlength="120" placeholder="job name"></label>{% endif %}
+    <p id="err" class="err" role="alert"></p>
+  </div>

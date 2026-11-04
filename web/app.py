@@ -17,19 +17,21 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import RLock
 
 import httpx
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import config_render, detect, excellon, moonraker, probe
+from . import config_render, detect, excellon, moonraker, probe, watchdog
 
 ROOT = Path(__file__).resolve().parent.parent
 JOBS = Path(os.environ.get("PCB_MILL_JOBS", ROOT / "web_jobs"))
@@ -40,9 +42,28 @@ BOARD_LOAD_Y = 100.0
 # PCB_DATUM search window. The old 3 mm was too short from the G28 park height.
 DATUM_DEPTH_MM = 25.0
 
-app = FastAPI(title="pcb-mill")
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    task = asyncio.create_task(watchdog.Watchdog().run()) if watchdog.enabled() else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+
+
+app = FastAPI(title="pcb-mill", lifespan=_lifespan)
 templates = Jinja2Templates(Path(__file__).parent / "templates")
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+
+def _asset(name: str) -> str:
+    """/static URL stamped with the file's mtime, so a deploy is never masked by a cached copy."""
+    f = Path(__file__).parent / "static" / name
+    return f"/static/{name}?v={int(f.stat().st_mtime)}" if f.exists() else f"/static/{name}"
+
+
+templates.env.globals["asset"] = _asset
+templates.env.filters["timestamp"] = lambda t: time.strftime("%H:%M", time.localtime(t))
 
 ALLOWED = {".gbr", ".gm1", ".gko", ".gbl", ".gtl", ".drl", ".txt", ".xln"}
 
@@ -183,27 +204,56 @@ def _new_job_dir(title: str) -> Path:
     raise HTTPException(500, "could not allocate a job directory")
 
 
-@app.post("/upload")
-async def upload(request: Request, files: list[UploadFile] = File(...),
-                 side: str = Form(""), title: str = Form("")):
-    """Drag-and-drop entry: any pile of Gerber/drill outputs; roles come from the files themselves."""
+@app.post("/detect")
+async def detect_files(files: list[UploadFile] = File(...)):
+    """Auto-detect each uploaded file's role so the page can offer a dropdown."""
     blobs = [(f.filename, await f.read()) for f in files if f.filename]
-    try:
-        a = detect.assign(blobs, side or None)
-    except detect.DetectError as e:
-        raise HTTPException(400, str(e))
-    a["title"] = _clean_title(title, a["title"])
-    job = _new_job_dir(a["title"])
+    roles = detect.resolve_roles(blobs)
+    return JSONResponse({
+        "files": [{"name": n, "role": r} for (n, _), r in zip(blobs, roles)],
+        "auto": detect.AUTO,
+        "choices": [{"value": r, "label": lab} for r, lab in detect.ROLE_LABELS],
+    })
 
+
+async def _read_upload(request: Request, files: list[UploadFile]):
+    """-> ([(filename, bytes)], [role pick per file]); picks come from the form's `role` fields."""
+    form = await request.form()
+    picked = form.getlist("role")
+    blobs, manual = [], []
+    for i, f in enumerate(files):
+        if not f.filename:
+            continue
+        blobs.append((f.filename, await f.read()))
+        manual.append(picked[i] if i < len(picked) else "")
+    return blobs, manual
+
+
+def _stage(job: Path, a: dict) -> tuple[Path, Path, Path, Path | None]:
+    """Write the detected inputs into the job folder under fixed names."""
     def put(item, stem):
         if not item:
             return None
         dest = job / (stem + Path(item[0]).suffix.lower())
         dest.write_bytes(item[1])
         return dest
+    return (put(a["copper"], "copper"), put(a["edge"], "edge"),
+            put(a["drill"], "drill_pth"), put(a["drill2"], "drill_npth"))
 
-    c, e = put(a["copper"], "copper"), put(a["edge"], "edge")
-    d1, d2 = put(a["drill"], "drill_pth"), put(a["drill2"], "drill_npth")
+
+@app.post("/upload")
+async def upload(request: Request, files: list[UploadFile] = File(...),
+                 title: str = Form("")):
+    """Drag-and-drop entry: roles come from the files themselves unless the
+    page sends an explicit `role` per file (the per-file dropdowns)."""
+    blobs, manual = await _read_upload(request, files)
+    try:
+        a = detect.assign(blobs, manual)
+    except detect.DetectError as e:
+        raise HTTPException(400, str(e))
+    a["title"] = _clean_title(title, a["title"])
+    job = _new_job_dir(a["title"])
+    c, e, d1, d2 = _stage(job, a)
     return await _finish_create(request, job, c, e, d1, d2, a["side"], a["title"])
 
 
@@ -230,7 +280,13 @@ async def _finish_create(request: Request, job: Path, c: Path, e: Path, d1: Path
     cfg = config_render.render_config(overrides, tool_by_op)
     cfg_path = job / "mill_config.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+    _begin_conversion(job, c, e, drill_path, cfg, cfg_path, side, title)
+    return RedirectResponse(f"/jobs/{job.name}", status_code=303)
 
+
+def _begin_conversion(job: Path, c: Path, e: Path, drill_path: Path, cfg: dict, cfg_path: Path,
+                      side: str, title: str):
+    """Fresh status.json for the job, then convert in the background."""
     report = excellon.hole_report(
         excellon.parse(drill_path.read_text()),
         cfg["tools"]["drill"]["tool_diameter"],
@@ -241,7 +297,6 @@ async def _finish_create(request: Request, job: Path, c: Path, e: Path, d1: Path
         "files": [], "created": time.strftime("%F %T")}, indent=2))
 
     asyncio.create_task(_convert(job, str(c), side, str(e), str(drill_path), cfg_path))
-    return RedirectResponse(f"/jobs/{job.name}", status_code=303)
 
 
 def _live() -> dict | None:
@@ -288,6 +343,13 @@ def _job_context(request: Request, name: str) -> dict:
             elapsed = int(time.time() - time.mktime(time.strptime(st["created"], "%Y-%m-%d %H:%M:%S")))
         except ValueError:
             pass
+    phase = st.get("phase")
+    if phase and phase.get("state") == "running" and name not in _RUNNING:
+        # saved as running but nothing in this process is running it: the app was
+        # restarted or Klipper dropped mid-step. Don't leave the page stuck on a spinner.
+        phase = {**phase, "state": "error",
+                 "error": "interrupted before it finished (the app restarted or Klipper stopped)"}
+        _set_status(job, phase=phase)
     ms = _live() if st.get("state") == "done" else None
     plan = _plan_for(st, ms)
     steps = None
@@ -306,7 +368,8 @@ def _job_context(request: Request, name: str) -> dict:
     return {"request": request, "name": name, "st": st, "log": log, "elapsed": elapsed,
             "moonraker_control": moonraker.control_available(),
             "fluidd": moonraker.fluidd(), "ms": ms, "plan": plan, "steps": steps,
-            "phase": st.get("phase"), "printing": print_state in ("printing", "paused"),
+            "auto_restart": watchdog.recent_event(),
+            "phase": phase, "printing": print_state in ("printing", "paused"),
             "datum_depth": DATUM_DEPTH_MM}
 
 
@@ -329,6 +392,65 @@ async def rename_job(name: str, title: str = Form(...)):
     st = _status(job)
     _set_status(job, title=_clean_title(title, st.get("title") or name))
     return RedirectResponse(f"/jobs/{name}", status_code=303)
+
+
+def _busy(job: Path, st: dict) -> str | None:
+    """Why this job's folder must not be touched right now, or None."""
+    if st.get("state") in ("queued", "converting"):
+        return "this job is still converting"
+    if job.name in _RUNNING or (st.get("phase") or {}).get("state") == "running":
+        return "a machine step is running for this job"
+    ms = _live()
+    if ms and ms.get("print", {}).get("state") in ("printing", "paused") and st.get("sent"):
+        return "the machine is cutting; stop it first"
+    return None
+
+
+@app.post("/jobs/{name}/replace")
+async def replace_files(request: Request, name: str, files: list[UploadFile] = File(...)):
+    """Upload new Gerbers to an existing job: same name and cutting parameters,
+    everything derived from the old files (toolpaths, datum/mesh progress, sent
+    state) is thrown away and conversion starts again."""
+    job = JOBS / name
+    if not job.is_dir():
+        raise HTTPException(404)
+    st = _status(job)
+    if why := _busy(job, st):
+        raise HTTPException(409, why)
+    blobs, manual = await _read_upload(request, files)
+    try:
+        a = detect.assign(blobs, manual)
+    except detect.DetectError as e:
+        raise HTTPException(400, str(e))
+    cfg_path = job / "mill_config.yaml"
+    if not cfg_path.exists():
+        raise HTTPException(409, "job has no saved cutting parameters")
+    cfg = yaml.safe_load(cfg_path.read_text())
+
+    for child in job.iterdir():          # keep only the config; the rest is derived
+        if child == cfg_path:
+            continue
+        shutil.rmtree(child) if child.is_dir() else child.unlink()
+    c, e, d1, d2 = _stage(job, a)
+    if d2:
+        drill_path = job / "drill.drl"
+        drill_path.write_text(excellon.merge(d1.read_text(), d2.read_text()))
+    else:
+        drill_path = d1
+    _begin_conversion(job, c, e, drill_path, cfg, cfg_path, a["side"],
+                      st.get("title") or a["title"])
+    return RedirectResponse(f"/jobs/{name}", status_code=303)
+
+
+@app.post("/jobs/{name}/delete")
+async def delete_job(name: str):
+    job = JOBS / name
+    if not job.is_dir() or job.resolve().parent != JOBS.resolve():
+        raise HTTPException(404)
+    if why := _busy(job, _status(job)):
+        raise HTTPException(409, why)
+    shutil.rmtree(job)
+    return RedirectResponse("/", status_code=303)
 
 
 @app.post("/jobs/{name}/stop")
@@ -545,6 +667,44 @@ async def skip_mesh(request: Request, name: str):
     if not ms or not ms["datum_done"]:
         raise HTTPException(409, "find the copper (datum) first")
     _set_status(job, mesh_skipped=True)
+    return _respond(request, name)
+
+
+@app.post("/jobs/{name}/abort")
+async def abort_step(request: Request, name: str):
+    """Emergency-stop a running machine step (the only way to cut a probe short).
+    Klipper goes into shutdown; the page then offers Restart Klipper."""
+    job = JOBS / name
+    if not job.is_dir():
+        raise HTTPException(404)
+    if not moonraker.control_available():
+        raise HTTPException(409, "Moonraker control not available")
+    st = _status(job)
+    if not (job.name in _RUNNING or (st.get("phase") or {}).get("state") == "running"):
+        raise HTTPException(409, "no machine step is running")
+    try:
+        await asyncio.to_thread(moonraker.emergency_stop)
+    except moonraker.KlipperError as e:
+        raise HTTPException(409, str(e))
+    _set_status(job, phase={**(st.get("phase") or {}), "state": "error",
+                            "error": "stopped by you (emergency stop); restart Klipper, then home and redo the copper and mesh"})
+    _RUNNING.discard(job.name)
+    return _respond(request, name)
+
+
+@app.post("/jobs/{name}/klipper-restart")
+async def klipper_restart(request: Request, name: str):
+    """FIRMWARE_RESTART after a shutdown or lost MCU. Homing, datum and mesh are cleared."""
+    if not (JOBS / name).is_dir():
+        raise HTTPException(404)
+    if not moonraker.control_available():
+        raise HTTPException(409, "Moonraker control not available")
+    if _RUNNING:
+        raise HTTPException(409, "a machine step is running")
+    try:
+        await asyncio.to_thread(moonraker.firmware_restart)
+    except moonraker.KlipperError as e:
+        raise HTTPException(409, str(e))
     return _respond(request, name)
 
 

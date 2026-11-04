@@ -86,6 +86,38 @@ def cancel() -> None:
         raise KlipperError(_error_message(r))
 
 
+def _post(path: str) -> None:
+    base = _api()
+    if not base:
+        raise RuntimeError("Moonraker control not available")
+    r = httpx.post(f"{base}{path}", timeout=30)
+    if r.status_code >= 400:
+        raise KlipperError(_error_message(r))
+
+
+def info() -> dict | None:
+    """Klipper's /printer/info (state + state_message), or None if Moonraker is unreachable."""
+    base = _api()
+    if not base:
+        return None
+    try:
+        r = httpx.get(f"{base}/printer/info", timeout=5)
+        r.raise_for_status()
+        return r.json()["result"]
+    except (httpx.HTTPError, KeyError, ValueError):
+        return None
+
+
+def emergency_stop() -> None:
+    """M112: halts everything at once. Klipper then sits in shutdown until restarted."""
+    _post("/printer/emergency_stop")
+
+
+def firmware_restart() -> None:
+    """Reset the MCU and reload the config. Clears homing, datum and mesh."""
+    _post("/printer/firmware_restart")
+
+
 def query(objects: str) -> dict:
     base = _api()
     if not base:

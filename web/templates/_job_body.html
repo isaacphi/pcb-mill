@@ -13,10 +13,11 @@
 {% endmacro %}
 
 {% if st.state == "done" %}
+{% set located = st.board_ready or (steps and steps.origin and steps.homed and steps.datum) %}
 <ol class="steps">
   <li class="done">Convert</li>
-  <li class="{{ 'done' if st.board_ready else 'current' }}">Set up board</li>
-  <li class="{{ 'done' if steps and steps.datum else ('current' if st.board_ready and steps and steps.homed else 'todo') }}">Find copper</li>
+  <li class="{{ 'done' if located else 'current' }}">Set up board</li>
+  <li class="{{ 'done' if steps and steps.datum else ('current' if located and steps and steps.homed else 'todo') }}">Find copper</li>
   <li class="{{ 'done' if (steps and steps.mesh) or st.mesh_skipped else ('current' if steps and steps.datum else 'todo') }}">Mesh{% if st.mesh_skipped and not (steps and steps.mesh) %} (skipped){% endif %}</li>
   <li class="{{ 'done' if st.sent else ('current' if (steps and steps.mesh) or st.mesh_skipped else 'todo') }}">Send</li>
   <li class="{{ 'current' if st.sent else 'todo' }}">Cut</li>
@@ -24,7 +25,6 @@
 {% endif %}
 
 {% if st.error %}<p class="err">{{ st.error }}</p>{% endif %}
-{% if st.side == "bottom" %}<p class="dim"><b>Bottom-side job:</b> flip the board left-right (mirror X), not top-bottom.</p>{% endif %}
 
 {% if st.state in ["queued", "converting"] %}
 <div class="processing"><div class="spinner"></div>
@@ -46,8 +46,14 @@
 
   {% if moonraker_control %}
 <h2>Machine</h2>
+{% if auto_restart %}
+<p class="warn">Klipper lost its connection to the machine and was restarted automatically
+  at {{ auto_restart.at | int | timestamp }}{% if not auto_restart.ok %} (the restart request failed; it will retry){% endif %}.
+  Homing, the copper datum and the mesh were cleared.</p>
+{% endif %}
 {% if not ms %}
-<p class="err">Klipper not reachable. Check Fluidd (FIRMWARE_RESTART if it's in error).</p>
+<p class="err">Klipper not reachable or in an error state (for example it lost its connection to the machine).</p>
+{{ act("klipper-restart", "Restart Klipper", "secondary", "Restart Klipper? This clears homing, the copper datum and the mesh, so you will redo them before cutting.") }}
 {% else %}
 <p class="dim">{{ st.board.w }} × {{ st.board.h }} mm; origin {% if ms.origin %}X{{ "%.1f"|format(ms.origin[0]) }} Y{{ "%.1f"|format(ms.origin[1]) }}{% else %}<b>not set</b>{% endif %}; bit X{{ "%.1f"|format(ms.position[0]) }} Y{{ "%.1f"|format(ms.position[1]) }}; homed {{ ms.homed or "no" }}</p>
 
@@ -58,17 +64,21 @@
 {% if phase and phase.state == "running" %}
 <div class="processing"><div class="spinner"></div>
   <div><b>{{ phase.name }}</b> <code>{{ phase.script }}</code></div></div>
-<p class="dim">For an immediate stop while probing, use the machine e-stop.</p>
+{{ act("abort", "Abort (emergency stop)", "danger", "Emergency stop now? Probing cannot be paused: this stops the machine and puts Klipper into shutdown. You will need to restart Klipper, then home and redo the copper and mesh.") }}
+<p class="dim">A probe in progress cannot be paused or cancelled any other way. The machine e-stop does the same thing.</p>
 {% else %}
   {% if phase and phase.state == "error" %}
 <p class="err">{{ phase.name }} failed: {{ phase.error }}</p>
 {{ act("lift", "Lift the bit") }}
   {% endif %}
 
-  {% if not st.setup_done %}
+  {# Per-job flags (setup_done/board_ready) only matter until the live machine state
+     shows the board is already located and meshed; then go straight to Send. #}
+  {% set live_ready = steps.origin and steps.homed and steps.datum and (steps.mesh or st.mesh_skipped) %}
+  {% if not live_ready and not st.setup_done %}
 <p>Home the machine, then move the bed to <b>board Y=100 mm</b> (100 mm forward of the board's bottom edge) for loading.</p>
 {{ act("setup", "Home & move bed forward", "", "Home now? This clears the current datum and mesh.") }}
-  {% elif not st.board_ready %}
+  {% elif not live_ready and not st.board_ready %}
 <p>Attach the copper board and clamp it. Clip the probe leads to the tool shank and the board's copper pour. Spindle off.</p>
 {{ act("board-ready", "Board attached") }}
   {% elif not steps.origin %}
@@ -99,10 +109,12 @@ Jogging down stops on contact. Keep the machine e-stop within reach.</p>
   {% else %}
     {% if st.mesh_skipped and not steps.mesh %}
 <p class="err">Mesh skipped. Using the flat datum plane only. Z depth may vary across the board.</p>
+      {% if plan and plan.fits %}{{ act("mesh", "Probe mesh instead", "secondary") }}{% endif %}
     {% else %}
 {{ jog(up_only=True) }}
 <p class="ok">Mesh ready: {{ "%.3f"|format(ms.mesh.lo) }} … {{ "%.3f"|format(ms.mesh.hi) }} mm
   (spread {{ "%.3f"|format(ms.mesh.hi - ms.mesh.lo) }})</p>
+      {% if plan and plan.fits %}{{ act("mesh", "Redo mesh", "secondary", "Probe the mesh again? This replaces the current mesh.") }}{% endif %}
 <table class="mesh" aria-label="Mesh height map">
       {% for row in ms.mesh.matrix|reverse %}
   <tr>{% for z in row %}<td>{{ "%+.3f"|format(z) }}</td>{% endfor %}</tr>
